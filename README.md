@@ -169,7 +169,7 @@ mi-proxy:
 ```
 
 Limits of `opencode` agents: no coordinator board injected into prompts (use `team`), no token/context accounting
-and no `/clear`/`/compact` by orq. The `openai`-kind runner is leaner than Claude Code: no subagents, no web tools, a resumed agent starts a fresh conversation. It reports the API's prompt size as the agent's context, and understands `/clear` and `/compact` (local, no model call) so the cost profiles work. `opencode` agents are never sent those commands. Default models of `grok`/`gemini`/`openai` are examples: set yours in `providers.yaml`. A launch is refused up front if a provider's key or binary is missing.
+and no `/clear`/`/compact` by orq. The `openai`-kind runner is leaner than Claude Code: no subagents, no web tools, its conversation is saved per session (`history-<session>.json` in the run folder) and reloaded when the agent restarts; a light resume starts fresh with orq's summary. It reports the API's prompt size as the agent's context, and understands `/clear` and `/compact` (local, no model call) so the cost profiles work. `opencode` agents are never sent those commands. Default models of `grok`/`gemini`/`openai` are examples: set yours in `providers.yaml`. A launch is refused up front if a provider's key or binary is missing.
 
 ## 🏬 Default departments
 

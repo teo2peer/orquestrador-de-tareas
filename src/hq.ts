@@ -663,6 +663,8 @@ export class HQ extends EventEmitter {
         cwd: this.cwd,
         writes: role.writes,
         sessionId: agent.sessionId,
+        // Next to the run's other logs (privateDir is wiped when the run stops, a resume must still find it).
+        historyFile: path.join(dir, `history-${agent.sessionId}.json`),
         mcp: { command: process.execPath, args: [MCP_SCRIPT], env },
       };
       const cfgFile = this.writePrivate(agent.id, 'runner.json', JSON.stringify(cfg, null, 2));

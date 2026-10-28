@@ -51,7 +51,8 @@ if (cmd === 'stats') {
   process.exit(0);
 }
 
-for (const bin of ['tmux', 'claude']) {
+// `claude` (or opencode / an API key) is checked per provider when launching (providers.ts launchIssue).
+for (const bin of ['tmux']) {
   if (!Bun.which(bin)) {
     console.error(`orq needs \`${bin}\` in PATH.`);
     process.exit(1);

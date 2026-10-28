@@ -12,6 +12,8 @@ export type RunnerConfig = {
   cwd: string;
   writes: boolean;
   sessionId: string;
+  /** Where the conversation is saved after every turn and reloaded from when the agent restarts (resume). */
+  historyFile?: string;
   mcp: { command: string; args: string[]; env: Record<string, string> };
 };
 
@@ -198,4 +200,36 @@ export async function runTurn(s: Session, prompt: string, o: { chat: Chat; tools
     if (stop.decision === 'block' && stop.reason) next = String(stop.reason);
   }
   return last;
+}
+
+/** Saves the conversation (atomic). Best effort: a failure only means no history on resume. */
+export function saveHistory(file: string, s: Session) {
+  try {
+    const tmp = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(s.messages), { mode: 0o600 });
+    fs.renameSync(tmp, file);
+  } catch {
+    // ignore
+  }
+}
+
+/** Messages saved by a previous run of the same session, or undefined. Requires a system prompt first and no orphan tool results. */
+export function loadHistory(file: string): ChatMessage[] | undefined {
+  try {
+    const m = JSON.parse(fs.readFileSync(file, 'utf8')) as ChatMessage[];
+    if (!Array.isArray(m) || m[0]?.role !== 'system') return undefined;
+    const open = new Set<string>();
+    for (const x of m) {
+      for (const c of x.tool_calls ?? []) open.add(c.id);
+      if (x.role === 'tool') open.delete(x.tool_call_id ?? '');
+    }
+    // A turn cut in the middle (tool calls without results) cannot be sent back to the API: drop its tail.
+    if (open.size) {
+      const cut = m.findLastIndex((x) => x.role === 'user');
+      return cut > 0 ? m.slice(0, cut) : [m[0]!];
+    }
+    return m;
+  } catch {
+    return undefined;
+  }
 }

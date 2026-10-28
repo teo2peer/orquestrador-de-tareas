@@ -231,3 +231,31 @@ describe('HQ context handling for non-Claude agents', () => {
     expect(typed).toEqual(['/compact']);
   });
 });
+
+describe('history persistence', () => {
+  test('saved history reloads; a turn cut mid tool-call loses only its tail', async () => {
+    const { saveHistory, loadHistory } = await import('./runner-core.ts');
+    const file = path.join(tmp(), 'h.json');
+    const full: ChatMessage[] = [
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: 'u1' },
+      { role: 'assistant', content: 'a1' },
+    ];
+    saveHistory(file, { sessionId: 's', messages: full });
+    expect(loadHistory(file)).toEqual(full);
+    expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    const cut: ChatMessage[] = [...full, { role: 'user', content: 'u2' }, { role: 'assistant', content: null, tool_calls: [call('9', 'Bash', { command: 'x' })] }];
+    saveHistory(file, { sessionId: 's', messages: cut });
+    expect(loadHistory(file)).toEqual(full);
+  });
+
+  test('missing, corrupt or system-less files give no history', async () => {
+    const { loadHistory } = await import('./runner-core.ts');
+    const dir = tmp();
+    expect(loadHistory(path.join(dir, 'none.json'))).toBeUndefined();
+    fs.writeFileSync(path.join(dir, 'bad.json'), '{not json');
+    expect(loadHistory(path.join(dir, 'bad.json'))).toBeUndefined();
+    fs.writeFileSync(path.join(dir, 'nosys.json'), JSON.stringify([{ role: 'user', content: 'x' }]));
+    expect(loadHistory(path.join(dir, 'nosys.json'))).toBeUndefined();
+  });
+});

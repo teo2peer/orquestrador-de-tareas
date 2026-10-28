@@ -217,7 +217,7 @@ export function Sessions({ height }: { height: number }) {
                     {' '}
                     {g.sep} {r.runId} {g.sep} <Text color={PERM_COLOR[r.permMode ?? 'auto']}>{perm}</Text> {g.sep}{' '}
                     <Pill color={r.mode === 'area' ? INFO : MUTED}>{r.mode === 'area' ? `${g.area} Por partes` : 'Por rol'}</Pill>
-                    {r.profile ? <Pill color={r.profile === 'saver' ? WARN : MUTED}>{`Consumo: ${PROFILE_SHORT[r.profile]}`}</Pill> : null} {g.sep} {r.messages} mensajes
+                    {r.profile ? <Pill color={r.profile === 'saver' ? WARN : MUTED}>{`Consumo: ${PROFILE_SHORT[r.profile]}`}</Pill> : null}{r.provider ? <Pill color={INFO}>{`Proveedor: ${r.provider}`}</Pill> : null} {g.sep} {r.messages} mensajes
                   </Text>
                   {scope === 'all' ? (
                     <Text color={WARN}>

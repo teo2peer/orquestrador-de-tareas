@@ -37,7 +37,7 @@ test('runner: message on stdin → model → company tool through MCP → Stop h
   const system = path.join(dir, 'system.md');
   fs.writeFileSync(system, 'You are a test agent');
   const cfg = path.join(dir, 'runner.json');
-  fs.writeFileSync(cfg, JSON.stringify({ baseUrl: `http://localhost:${api.port}/v1`, keyEnv: 'ORQ_E2E_KEY', model: 'm', system, cwd: dir, writes: false, sessionId: 's1', mcp: { command: process.execPath, args: [MCP_SCRIPT], env: { ORQ_SOCKET: sock, ORQ_AGENT_ID: 'dev' } } }));
+  fs.writeFileSync(cfg, JSON.stringify({ baseUrl: `http://localhost:${api.port}/v1`, keyEnv: 'ORQ_E2E_KEY', model: 'm', system, cwd: dir, writes: false, sessionId: 's1', historyFile: path.join(dir, 'history.json'), mcp: { command: process.execPath, args: [MCP_SCRIPT], env: { ORQ_SOCKET: sock, ORQ_AGENT_ID: 'dev' } } }));
   const proc = Bun.spawn([process.execPath, path.join(import.meta.dir, 'runner.ts'), cfg], {
     cwd: dir,
     stdin: 'pipe',
@@ -61,6 +61,9 @@ test('runner: message on stdin → model → company tool through MCP → Stop h
     expect(hooks[1].prompt).toBe('📬 hello\nsecond line');
     expect(hooks.at(-1).last_assistant_message).toBe('saw: board: all idle');
     expect(tools[0]).toMatchObject({ agent: 'dev', tool: 'team' });
+    await until(() => fs.existsSync(path.join(dir, 'history.json')));
+    const saved = JSON.parse(fs.readFileSync(path.join(dir, 'history.json'), 'utf8'));
+    expect(saved.map((m: any) => m.role)).toEqual(['system', 'user', 'assistant', 'tool', 'assistant']);
   } finally {
     proc.kill();
     hq.stop(true);

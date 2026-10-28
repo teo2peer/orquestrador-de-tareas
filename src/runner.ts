@@ -3,7 +3,7 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import fs from 'node:fs';
-import { clearSession, compactSession, openaiChat, runTurn, builtinTools, type Hooks, type RunnerConfig, type Session, type ToolDef } from './runner-core.ts';
+import { clearSession, compactSession, loadHistory, saveHistory, openaiChat, runTurn, builtinTools, type Hooks, type RunnerConfig, type Session, type ToolDef } from './runner-core.ts';
 
 const cfg = JSON.parse(fs.readFileSync(process.argv[2]!, 'utf8')) as RunnerConfig;
 const apiKey = process.env[cfg.keyEnv];
@@ -51,10 +51,13 @@ const hooks: Hooks = {
 };
 const chat = openaiChat({ baseUrl: cfg.baseUrl, apiKey, model: cfg.model });
 const session: Session = { sessionId: cfg.sessionId, messages: [{ role: 'system', content: fs.readFileSync(cfg.system, 'utf8') }] };
+// A restarted agent (resume) continues its conversation; the system prompt is always the current one.
+const saved = cfg.historyFile ? loadHistory(cfg.historyFile) : undefined;
+if (saved) session.messages = [session.messages[0]!, ...saved.slice(1)];
 const tools = [...builtinTools(cfg.writes), ...mcpTools];
 const mcpNames = new Set(mcpTools.map((t) => t.name));
 
-console.log(`orq runner · ${cfg.model} @ ${cfg.baseUrl}`);
+console.log(`orq runner · ${cfg.model} @ ${cfg.baseUrl}${saved ? ` · conversación retomada (${saved.length - 1} mensajes)` : ''}`);
 await send({ hook_event_name: 'SessionStart', session_id: cfg.sessionId, source: 'startup' });
 
 // Input: HQ pastes a message and presses Enter. Lines that arrive together (a multi-line paste) are one message.
@@ -70,6 +73,7 @@ const flush = () => {
     busy = busy.then(async () => {
       (text === '/clear' ? clearSession : compactSession)(session);
       say(`${text === '/clear' ? '↺ contexto limpiado' : '⇣ contexto compactado'} (~${session.contextTokens} tok)`);
+      if (cfg.historyFile) saveHistory(cfg.historyFile, session);
       await send({ hook_event_name: 'SessionStart', session_id: cfg.sessionId, source: text === '/clear' ? 'clear' : 'compact', context_tokens: session.contextTokens });
     });
     return;
@@ -85,6 +89,7 @@ const flush = () => {
       // Back to idle for HQ: the turn is over even though it failed.
       await send({ hook_event_name: 'Notification', session_id: cfg.sessionId, message: 'Claude is waiting for your input' });
     }
+    if (cfg.historyFile) saveHistory(cfg.historyFile, session);
     working = false;
     status();
   });

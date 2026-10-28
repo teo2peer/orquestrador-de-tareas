@@ -6,7 +6,7 @@ import { APP_ROOT, HOOK_SCRIPT, MCP_SCRIPT, ORQ_HOME, PROJECT_DIR } from './path
 import { ORQ_DATA_DENIED, denyRules, orqDataAccess } from './orq-guard.ts';
 import { SUMMARY_KINDS, buildResumeSummary, cacheWarm } from './resume.ts';
 import { loadDepartments } from './library.ts';
-import { claudeProviderEnv, opencodeConfig, opencodeLaunch, providerOf, runnerLaunch } from './providers.ts';
+import { claudeProviderEnv, launchIssue, opencodeConfig, opencodeLaunch, providerOf, runnerLaunch } from './providers.ts';
 import type { RunnerConfig } from './runner-core.ts';
 import { contextTokens, lastRequest } from './tokens.ts';
 import { usageFile } from './usage.ts';
@@ -753,7 +753,7 @@ ${team}
 
 ## Company protocol (mandatory)
 - Talk to other employees and to the user ONLY through the \`mcp__company__*\` tools.
-  Plain text in your terminal is not seen by anyone.
+  Plain text in your terminal is not seen by anyone.${this.providerFor(role).kind === 'opencode' ? '\n  In this terminal those tools are exposed as `company_<tool>` (e.g. `company_report`): wherever this text says `mcp__company__<tool>`, call that one.' : ''}
 - When you receive a task: call \`set_status\` with a short summary (<60 chars) of what you are doing.
 - When you finish a task: call \`report\` to whoever asked you with a SHORT summary (at most ~10 lines:
   outcome, files touched, open issues) and the final status (done | blocked | partial). Put long details
@@ -1264,9 +1264,12 @@ ${
     }
     if (n?.kind === 'hire' && n.role) {
       const role = roles.find((r) => r.id === n.role);
-      if (accept && role) this.hire(role);
+      // The provider's key or binary may be missing: say why instead of starting a pane that dies at once.
+      const issue = accept && role ? launchIssue([this.providerFor(role)].map((x) => ({ provider: x.id }))) : undefined;
+      if (accept && role && !issue) this.hire(role);
       if (this.agents.has(n.from))
-        this.post('system', n.from, accept && role ? `Hire approved: \`${n.role}\` has joined.` : `Hire of \`${n.role}\` rejected by the user.`, 'system');
+        this.post('system', n.from, accept && role && !issue ? `Hire approved: \`${n.role}\` has joined.` : issue ? `Hire of \`${n.role}\` failed: ${issue}.` : `Hire of \`${n.role}\` rejected by the user.`, 'system');
+      if (issue) this.track(this.agents.get(n.from) ?? [...this.agents.values()][0]!, 'system', `⚠ ${issue}`);
     }
     this.changed();
   }

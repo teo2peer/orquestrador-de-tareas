@@ -145,7 +145,14 @@ export function opencodeConfig(o: { system: string; model?: string; writes: bool
 
 /** launch.sh lines starting an opencode agent. `sessionId` only when resuming a session the plugin reported. */
 export function opencodeLaunch(configPath: string, cwd: string, sessionId?: string): string[] {
-  return [`export OPENCODE_CONFIG=${q(configPath)}`, `cd ${q(cwd)}`, `exec opencode${sessionId ? ` --session ${q(sessionId)}` : ''}`];
+  return [
+    `export OPENCODE_CONFIG=${q(configPath)}`,
+    `cd ${q(cwd)}`,
+    // opencode 2.x attaches to a shared background server (one config, one environment for every agent): each agent
+    // needs its own private one. Older versions have no such flag.
+    `STANDALONE=; opencode --help 2>&1 | grep -q -- '--standalone' && STANDALONE=--standalone`,
+    `exec opencode $STANDALONE${sessionId ? ` --session ${q(sessionId)}` : ''}`,
+  ];
 }
 
 export const RUNNER_SCRIPT = path.join(path.dirname(MCP_SCRIPT), 'runner.ts');

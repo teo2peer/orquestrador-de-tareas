@@ -152,3 +152,33 @@ describe('launch checks', () => {
     expect(launchIssue([{ provider: 'grok' }], 'claude', undefined, {})).toBeUndefined();
   });
 });
+
+describe('opencode launch and prompt', () => {
+  const role = { id: 'dev', name: 'Dev', title: 'Dev', accessory: 'none', color: 'cyan', writes: true, description: '', prompt: '', scope: 'global', file: '' } as any;
+  test('opencode starts with its own private server when the version has one', () => {
+    const hq = new HQ({ roles: [], permMode: 'auto', cwd: tmp(), provider: 'opencode' });
+    const agent: any = { id: 'dev', role, status: 'starting', task: '', children: [], sessionId: 's', tmux: 't', inbox: [], timeline: [], stopBlocks: 0 };
+    const script = fs.readFileSync((hq as any).writeLaunchFiles(agent), 'utf8');
+    expect(script).toContain("grep -q -- '--standalone'");
+    expect(script).toContain('exec opencode $STANDALONE');
+    expect(fs.readFileSync(path.join(hq.store.dir, 'agents', 'dev', 'system.md'), 'utf8')).toContain('company_<tool>');
+  });
+
+  test('only opencode agents are told the company tools are called company_<tool>', () => {
+    const hq = new HQ({ roles: [], permMode: 'auto', cwd: tmp() });
+    const agent: any = { id: 'dev', role, status: 'starting', task: '', children: [], sessionId: 's', tmux: 't', inbox: [], timeline: [], stopBlocks: 0 };
+    (hq as any).writeLaunchFiles(agent);
+    expect(fs.readFileSync(path.join(hq.store.dir, 'agents', 'dev', 'system.md'), 'utf8')).not.toContain('company_<tool>');
+  });
+
+  test('approving a hire whose provider has no key is refused with the reason', () => {
+    delete process.env.XAI_API_KEY;
+    const hq = new HQ({ roles: [], permMode: 'auto', cwd: tmp() });
+    const lead: any = { id: 'cto', role: { ...role, id: 'cto' }, status: 'idle', task: '', children: [], sessionId: 's', tmux: 't', inbox: [], timeline: [], stopBlocks: 0 };
+    (hq as any).agents.set('cto', lead);
+    (hq as any).notices = [{ id: 'n1', kind: 'hire', role: 'dev', from: 'cto' }];
+    hq.answerNotice('n1', true, [{ ...role, provider: 'grok' }]);
+    expect(hq.agents.has('dev')).toBe(false);
+    expect(hq.messages.map((m: any) => m.body).join(' ')).toContain('XAI_API_KEY');
+  });
+});

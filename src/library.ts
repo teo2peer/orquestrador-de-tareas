@@ -52,6 +52,7 @@ function readRole(file: string, scope: Scope): Role {
     color: String(data.color ?? 'white'),
     writes: data.writes !== false,
     model: data.model ? String(data.model) : undefined,
+    provider: data.provider ? String(data.provider) : undefined,
     description: String(data.description ?? ''),
     prompt,
     source: data.source ? String(data.source) : undefined,
@@ -145,6 +146,7 @@ export function saveRole(role: Omit<Role, 'file' | 'prompt'> & { prompt?: string
   if (role.hair) data.hair = role.hair;
   if (role.skin) data.skin = role.skin;
   if (role.model) data.model = role.model;
+  if (role.provider) data.provider = role.provider;
   if (role.source) data.source = role.source;
   if (role.pack) data.pack = role.pack;
   if (role.area) data.area = { paths: role.area.paths };
@@ -323,6 +325,7 @@ export async function importPack(src: string, name?: string): Promise<{ pack: st
       color: prev?.color ?? PACK_COLORS[i % PACK_COLORS.length]!,
       writes: prev ? prev.writes : writes,
       model: prev?.model,
+      provider: prev?.provider,
       description: String(data.description ?? '').split('\n')[0]!.slice(0, 300),
       source: file,
       pack,

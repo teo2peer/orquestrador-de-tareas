@@ -87,6 +87,20 @@ server.registerTool(
 server.registerTool('inbox', { description: 'Fetch pending messages addressed to you.' }, () => call('inbox', {}));
 
 server.registerTool(
+  'memory',
+  {
+    description: 'Durable memory. `save`: keep a short fact you must not lose (decision, path, constraint); it survives /clear and resume. `search`: look up past messages and notes (this run, or `scope: "project"` for earlier runs) instead of asking or re-reading.',
+    inputSchema: {
+      action: z.enum(['save', 'search']),
+      text: z.string().describe('Note to save, or search words'),
+      scope: z.enum(['run', 'project']).optional(),
+      limit: z.number().int().min(1).max(15).optional(),
+    },
+  },
+  (args) => call('memory', args),
+);
+
+server.registerTool(
   'ask_user',
   {
     description: 'Ask the human owner ONE question, only when essential (destructive or irreversible action, credentials, money, scope change). 2-4 options, recommended first with "(recomendado)". The answer arrives later as a message.',

@@ -3,7 +3,9 @@ import { render } from 'ink';
 import React from 'react';
 import { importPack } from './library.ts';
 import { PROJECT_DIR, ensureHome } from './paths.ts';
-import { findRun, listRuns } from './runs.ts';
+import { findRun, listRuns, loadRun } from './runs.ts';
+import { formatStats, runStats } from './stats.ts';
+import { searchProject } from './store.ts';
 import { App } from './ui/App.tsx';
 import { setRedrawHook } from './ui/app-context.tsx';
 import { DISABLE_MOUSE } from './ui/mouse.tsx';
@@ -23,11 +25,55 @@ if (cmd === 'import') {
   process.exit(0);
 }
 
+if (cmd === 'search') {
+  // orq search <words>: messages and notes of every past run in this directory
+  const query = rest.join(' ');
+  if (!query.trim()) {
+    console.error('Usage: orq search <words>');
+    process.exit(1);
+  }
+  const hits = searchProject(PROJECT_DIR, query);
+  if (!hits.length) console.log('Sin resultados.');
+  for (const h of hits) console.log(`${new Date(h.ts).toLocaleString('es-ES', { hour12: false })} · ${h.run} · ${h.agent} [${h.kind}]\n  ${h.text.replace(/\s+/g, ' ')}`);
+  process.exit(0);
+}
+
+if (cmd === 'stats') {
+  // orq stats [runId | --last]: where the tokens of a run went
+  const arg = rest[0];
+  const run = !arg || arg === '--last' ? listRuns(PROJECT_DIR)[0] : findRun(arg);
+  if (!run?.exists) {
+    console.error(arg && arg !== '--last' ? `No existe la sesión ${arg}.` : 'No hay sesiones en este directorio.');
+    process.exit(1);
+  }
+  const meta = loadRun(run.dir);
+  console.log(formatStats(meta, runStats(meta)));
+  process.exit(0);
+}
+
 for (const bin of ['tmux', 'claude']) {
   if (!Bun.which(bin)) {
     console.error(`orq needs \`${bin}\` in PATH.`);
     process.exit(1);
   }
+}
+
+// orq web [--port N]: the same office in the browser (local only), see src/web/
+if (cmd === 'web') {
+  const i = rest.indexOf('--port');
+  const port = i >= 0 ? Number(rest[i + 1]) : 0;
+  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+    console.error('Usage: orq web [--port N]');
+    process.exit(1);
+  }
+  const { startWeb } = await import('./web/server.ts');
+  const web = await startWeb({ port });
+  console.log(`orq web → ${web.url}\nCtrl+C para cerrar (los agentes siguen en tmux).`);
+  // Like quitting the TUI: the agents keep running in tmux and the run can be reattached.
+  const bye = () => (web.session.hq?.detach(), web.stop(), process.exit(0));
+  process.on('SIGINT', bye);
+  process.on('SIGTERM', bye);
+  await new Promise(() => {});
 }
 
 // orq --resume            → open the Sessions tab for this directory
@@ -53,6 +99,9 @@ if (cmd === '--resume' || cmd === '-r') {
   orq --resume             lista las sesiones (este directorio / todos)
   orq --resume <runId>     reanuda o reconecta una sesión
   orq --resume --last      reanuda la última sesión de este directorio
+  orq web [--port N]       la misma interfaz en el navegador (solo local)
+  orq search <palabras>    busca en mensajes y notas de las sesiones de este directorio
+  orq stats [runId|--last] en qué se fueron los tokens de una sesión
   orq import <dir|host:/dir> [pack]   importa agentes markdown como roles`);
   process.exit(0);
 }

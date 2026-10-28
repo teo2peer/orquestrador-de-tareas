@@ -5,6 +5,7 @@ import type { CostProfile, PermMode } from '../types.ts';
 import { border, g } from './glyphs.ts';
 import { Clickable } from './mouse.tsx';
 import { applyKey, follow, pasteText, rowOf, rowsOf } from './text-edit.ts';
+import { cycleProvider } from '../providers.ts';
 import { profileHelp, skillsWarning } from './cost.ts';
 import { PROJECT_DIR } from '../paths.ts';
 import { BORDER, DANGER, FOCUS, INFO, MUTED, PERM_HELP, PERM_NAME, PERM_SHORT, PRIMARY, PROFILE_NAME, PROFILE_SHORT, PROFILE_WARN, PROFILES, SELECTED_BG, SELECTED_FG, SUCCESS, TEXT, WARN, fgOn, liveReducedMotion } from './theme.ts';
@@ -1109,17 +1110,30 @@ const MODES: PermMode[] = ['auto', 'auto-insecure', 'yolo'];
 const MODE_COLOR: Partial<Record<PermMode, string>> = { 'auto-insecure': WARN, yolo: DANGER };
 const agents = (n: number) => `${n} agente${n === 1 ? '' : 's'}`;
 
+/** Whether the launch options (mode, consumption, provider) are unfolded; shared by every launch panel. */
+let launchOptionsOpen = false;
+const launchOptionsListeners = new Set<() => void>();
+export function useLaunchOptions(): [boolean, () => void] {
+  const open = React.useSyncExternalStore(
+    (fn) => (launchOptionsListeners.add(fn), () => void launchOptionsListeners.delete(fn)),
+    () => launchOptionsOpen,
+  );
+  return [open, () => ((launchOptionsOpen = !launchOptionsOpen), launchOptionsListeners.forEach((fn) => fn()))];
+}
+
 /**
  * Rows a <LaunchButtons> takes. The component renders at exactly this height, so
  * screens can reserve it; pass `confirming: true` for the tallest state.
  * Inline it is always 1 row.
  */
-export function launchButtonsHeight({ running = false, confirming = false, inline = false, profile = false }: { running?: boolean; confirming?: boolean; inline?: boolean; profile?: boolean } = {}): number {
+export function launchButtonsHeight({ running = false, confirming = false, inline = false, profile = false, collapsed = false }: { running?: boolean; confirming?: boolean; inline?: boolean; profile?: boolean; collapsed?: boolean } = {}): number {
   if (inline) return 1;
+  // collapsed: one summary row (mode · consumption · provider) + button | confirmation
+  if (collapsed && !running) return 1 + (confirming ? 4 : 1);
   // running: [button] | question + consequence + buttons
   if (running) return confirming ? 3 : 1;
   // counter + toggle (+ Consumo) + (button + help | question + up to 2 consequences + buttons)
-  return 2 + (profile ? 1 : 0) + (confirming ? 4 : 2);
+  return 2 + (profile ? 2 : 0) + (confirming ? 4 : 2);
 }
 
 /**
@@ -1169,9 +1183,16 @@ export function LaunchButtons({
   verb: verbProp,
   profile,
   onProfileChange,
+  provider,
+  onProviderChange,
+  collapsed,
+  onToggleOptions,
 }: {
   count: number;
   running: boolean;
+  /** Fold mode / consumption / provider into one summary row with an «Opciones» button (see launchButtonsHeight). */
+  collapsed?: boolean;
+  onToggleOptions?: () => void;
   onLaunch: (mode?: PermMode) => void;
   /** One row (no help line), for toolbars. */
   inline?: boolean;
@@ -1188,6 +1209,9 @@ export function LaunchButtons({
   /** Cost profile row «Consumo: [ ● Ahorro │ … ] o» (new launches only; +1 row, see launchButtonsHeight). */
   profile?: CostProfile;
   onProfileChange?: (p: CostProfile) => void;
+  /** Provider row «Proveedor: [ Por rol │ Claude │ … ]» next to the cost profile ('' = each role's own). */
+  provider?: string;
+  onProviderChange?: (p: string) => void;
 }) {
   const [own, setOwn] = useState<PermMode>('auto');
   const [confirm, setConfirmState] = useState(false);
@@ -1247,11 +1271,61 @@ export function LaunchButtons({
       </Box>
     );
   }
+  if (collapsed && !running) {
+    const bits = [
+      <Text key="m" color={MODE_COLOR[mode] ?? TEXT} bold={mode !== 'auto'}>
+        {mode !== 'auto' ? `${g.warning} ` : ''}
+        {PERM_NAME[mode]}
+      </Text>,
+      ...(profile ? [<Text key="p">{PROFILE_SHORT[profile]}</Text>] : []),
+      ...(provider !== undefined ? [<Text key="v">{provider === '' ? 'Por rol' : provider}</Text>] : []),
+    ];
+    return (
+      <Box flexDirection="column" flexShrink={0} height={launchButtonsHeight({ confirming: confirm, collapsed: true })} overflow="hidden">
+        <Box flexDirection="row" flexShrink={0} height={1} overflow="hidden">
+          {bits.map((b, i) => (
+            <React.Fragment key={i}>
+              {i > 0 && <Text color={MUTED}> {g.sep} </Text>}
+              {b}
+            </React.Fragment>
+          ))}
+          <Box flexGrow={1} />
+          {onToggleOptions && <Button variant="secondary" label={`${g.gear} Opciones`} onClick={onToggleOptions} />}
+        </Box>
+        {confirm ? (
+          <>
+            {questionText}
+            {consequences.map((line) => (
+              <Text key={line} color={MUTED} wrap="truncate">
+                {line}
+              </Text>
+            ))}
+            {consequences.length < 2 ? <Text> </Text> : null}
+            {confirmRow}
+          </>
+        ) : (
+          <Box flexDirection="row">{launch}</Box>
+        )}
+      </Box>
+    );
+  }
   const withProfile = !!profile && !!onProfileChange;
   const profileRow = withProfile && (
     <Box flexDirection="row" flexShrink={0}>
-      <Text>Consumo: </Text>
+      <Box flexShrink={0}>
+        <Text>Consumo: </Text>
+      </Box>
       <Toggle label="Consumo" value={profile!} onChange={onProfileChange!} hint="o" options={PROFILES.map((p) => ({ value: p, label: (short ? PROFILE_SHORT : PROFILE_NAME)[p] }))} />
+    </Box>
+  );
+  // Too many options for a toggle in the narrow side panels: one button that cycles through them.
+  const nextProvider = () => onProviderChange?.(cycleProvider(provider ?? ''));
+  const providerRow = withProfile && provider !== undefined && onProviderChange && (
+    <Box flexDirection="row" flexShrink={0}>
+      <Box flexShrink={0}>
+        <Text>Proveedor: </Text>
+      </Box>
+      <Button variant="secondary" label={`${provider === '' ? 'Por rol' : provider} ${g.sep} cambiar (v)`} onClick={nextProvider} />
     </Box>
   );
   // A risky permission mode keeps its warning; then a repo whose skills the profile turns
@@ -1274,9 +1348,19 @@ export function LaunchButtons({
     );
   return (
     <Box flexDirection="column" flexShrink={0} height={launchButtonsHeight({ running, confirming: confirm, profile: withProfile })} overflow="hidden">
-      {!running && counter}
+      {!running &&
+        (onToggleOptions ? (
+          <Box flexDirection="row" flexShrink={0} height={1}>
+            {counter}
+            <Box flexGrow={1} />
+            <Button variant="secondary" label={`${g.gear} Menos`} onClick={onToggleOptions} />
+          </Box>
+        ) : (
+          counter
+        ))}
       {!running && toggle}
       {!running && profileRow}
+      {!running && (providerRow || (withProfile ? <Text> </Text> : null))}
       {confirm ? (
         <>
           {questionText}

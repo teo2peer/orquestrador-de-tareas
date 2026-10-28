@@ -1,0 +1,53 @@
+:root {
+  --bg: #fafaf8; --panel: #fff; --text: #1f2328; --muted: #6a737d; --line: #e3e3de;
+  --primary: #d97757; --primary-fg: #fff; --danger: #c0392b; --ok: #2e8b57; --warn: #b7791f; --info: #2f6fb0; --sel: #fbeee8;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #16161a; --panel: #202026; --text: #e8e8ea; --muted: #9a9aa5; --line: #34343c; --sel: #3a2a24; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+button, input, select, textarea { font: inherit; color: inherit; }
+header { display: flex; align-items: center; gap: 16px; padding: 0 16px; border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 2; flex-wrap: wrap; }
+header h1 { font-size: 16px; margin: 0; letter-spacing: .1em; }
+nav { display: flex; gap: 2px; }
+nav button { border: 0; background: none; padding: 14px 12px; cursor: pointer; border-bottom: 2px solid transparent; color: var(--muted); }
+nav button[aria-current="page"] { color: var(--text); border-color: var(--primary); }
+nav .badge { background: var(--primary); color: var(--primary-fg); border-radius: 9px; padding: 0 6px; font-size: 11px; margin-left: 4px; }
+.spacer { flex: 1; }
+.usage { color: var(--muted); font-size: 12px; }
+main { padding: 16px; max-width: 1200px; margin: 0 auto; }
+h2 { font-size: 15px; margin: 20px 0 8px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; text-align: left; }
+button.card { cursor: pointer; width: 100%; }
+.card.sel { border-color: var(--primary); background: var(--sel); }
+.card h3 { margin: 0 0 4px; font-size: 14px; }
+.muted { color: var(--muted); }
+.small { font-size: 12px; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.chip { border: 1px solid var(--line); border-radius: 14px; padding: 3px 10px; background: var(--panel); cursor: pointer; }
+.chip.sel { border-color: var(--primary); background: var(--sel); }
+.dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; background: var(--muted); flex: none; }
+.btn { border: 1px solid var(--line); background: var(--panel); border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+.btn.primary { background: var(--primary); color: var(--primary-fg); border-color: var(--primary); }
+.btn.danger { background: var(--danger); color: #fff; border-color: var(--danger); }
+.btn:disabled { opacity: .5; cursor: default; }
+textarea, input[type=text], select { width: 100%; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
+fieldset { border: 1px solid var(--line); border-radius: 8px; margin: 8px 0; }
+legend { color: var(--muted); font-size: 12px; padding: 0 6px; }
+label.opt { margin-right: 14px; cursor: pointer; }
+.status-working { background: var(--ok); } .status-starting { background: var(--info); } .status-idle { background: var(--muted); }
+.status-waiting { background: var(--warn); } .status-error { background: var(--danger); } .status-dormant, .status-stopped { background: var(--line); }
+.layout { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 16px; }
+@media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+.tl { max-height: 360px; overflow: auto; font-size: 12px; border-top: 1px solid var(--line); margin-top: 8px; }
+.tl div { padding: 2px 0; border-bottom: 1px dotted var(--line); white-space: pre-wrap; word-break: break-word; }
+.alert { border-left: 4px solid var(--warn); background: var(--panel); padding: 10px 12px; margin-bottom: 8px; border-radius: 4px; }
+.msg { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; margin-bottom: 8px; white-space: pre-wrap; word-break: break-word; }
+.msg.to-user { border-left: 4px solid var(--primary); }
+.toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 8px 16px; border-radius: 6px; z-index: 10; }
+.toast.err { background: var(--danger); color: #fff; }
+.overlay { position: fixed; inset: 0; background: rgba(0,0,0,.4); display: grid; place-items: center; z-index: 9; }
+.dialog { background: var(--panel); border-radius: 8px; padding: 20px; max-width: 460px; width: calc(100% - 32px); }
+.dialog h3 { margin-top: 0; }

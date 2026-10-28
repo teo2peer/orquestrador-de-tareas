@@ -1,3 +1,4 @@
+import { cycleProvider, listProviders } from '../providers.ts';
 import { Box, Text } from 'ink';
 import React, { useState } from 'react';
 import { deleteFile, importPack, makeId, saveRole } from '../library.ts';
@@ -9,7 +10,7 @@ import { g } from './glyphs.ts';
 import { Clickable } from './mouse.tsx';
 import { ACCESSORIES, STATE_ORDER, toHex } from './sprites.ts';
 import { DANGER, INFO, MUTED, SUCCESS, TEXT, WARN, PROFILES } from './theme.ts';
-import { BackButton, Button, buttonWidth, CardGrid, Checkbox, ColorPicker, Divider, LaunchButtons, launchButtonsHeight, ScrollArea, TextField, Toggle, toggleWidth, gridLayout as cardLayout, useFocusState, useScroll } from './widgets.tsx';
+import { BackButton, Button, buttonWidth, CardGrid, Checkbox, ColorPicker, Divider, LaunchButtons, launchButtonsHeight, ScrollArea, TextField, Toggle, toggleWidth, gridLayout as cardLayout, useFocusState, useLaunchOptions, useScroll } from './widgets.tsx';
 
 const NEW = '__new__';
 type Panel = { kind: 'view' } | { kind: 'edit'; draft: Draft; isNew: boolean } | { kind: 'import' };
@@ -268,13 +269,16 @@ function RoleDetail({
   onCopy: () => void;
   onDelete: () => void;
 }) {
-  const { selection, toggleSelection, launch, hq, perm, setPerm, profile, setProfile, confirmLaunch } = useApp();
+  const { selection, toggleSelection, launch, hq, perm, setPerm, profile, setProfile, provider, setProvider, confirmLaunch } = useApp();
+  const [showPrompt, setShowPrompt] = useState(false);
   useShortcuts(
     'roles/detail',
     [
       { keys: ['l'], run: () => confirmLaunch([role.id], role.id) },
       { keys: ['o'], run: () => !hq && setProfile(PROFILES[(PROFILES.indexOf(profile) + 1) % PROFILES.length]!) },
+      { keys: ['v'], run: () => !hq && setProvider(cycleProvider(provider)) },
       { keys: ['space'], run: () => toggleSelection(role.id) },
+      { keys: ['p'], run: () => setShowPrompt((v) => !v) },
       { keys: ['e'], run: onEdit },
       { keys: ['d'], run: onCopy },
       { keys: ['delete'], run: onDelete },
@@ -283,6 +287,7 @@ function RoleDetail({
     { active: keys },
   );
   const [confirming, setConfirming] = useState(false);
+  const [optsOpen, toggleOpts] = useLaunchOptions();
   const color = toHex(role.color);
   const inner = width - 2;
   // Cycles through the sprite states every 2 s; frozen on the first one with reduced motion (tick = 0).
@@ -292,8 +297,10 @@ function RoleDetail({
   const sprite = height >= 40 ? 'xl' : height >= 20 ? 'normal' : null;
   const topH = sprite === 'xl' ? 14 : sprite ? 7 : 3;
   const fullFicha = height >= 30;
-  const fixedH = topH + (fullFicha ? 5 : 1) + 1 + launchButtonsHeight({ running: !!hq, confirming, profile: true }) + 1;
-  const promptH = Math.max(1, height - fixedH);
+  const fixedH = topH + (fullFicha ? 5 : 1) + 1 + launchButtonsHeight({ running: !!hq, confirming, profile: true, collapsed: !optsOpen }) + 1;
+  const fullPromptH = Math.max(1, height - fixedH);
+  // Folded: a 4-line preview; the rest of the panel stays calm.
+  const promptH = showPrompt ? fullPromptH : Math.min(4, fullPromptH);
   const spriteW = sprite === 'xl' ? 24 : sprite ? 12 : 0;
   const desc = wrap(role.description || '—', inner - spriteW - 3, topH - 2);
   const promptLines = wrap(role.prompt || '(sin prompt)', inner - 1);
@@ -351,6 +358,8 @@ function RoleDetail({
           <Text>
             <Text color={MUTED}>Modelo    </Text>
             {role.model ?? 'por defecto'}
+            <Text color={MUTED}> {g.sep} proveedor </Text>
+            {role.provider ?? 'claude'}
           </Text>
           <Text wrap="truncate">
             <Text color={MUTED}>Origen    </Text>
@@ -358,7 +367,9 @@ function RoleDetail({
           </Text>
         </>
       )}
-      <Divider title={`Prompt (${promptLines.length} líneas ${g.sep} rueda)`} width={inner} color={color} />
+      <Clickable onClick={() => setShowPrompt(!showPrompt)} height={1} aria-role="button" aria-label={showPrompt ? 'Plegar prompt' : 'Ver prompt completo'} aria-state={{ expanded: showPrompt }}>
+        <Divider title={`Prompt (${promptLines.length} líneas) ${g.sep} ${showPrompt ? '▾ clic para plegar' : '▸ clic para ver todo'}`} width={inner} color={color} />
+      </Clickable>
       <ScrollArea scroll={scroll} height={promptH} color={color}>
         {promptLines.slice(scroll.offset, scroll.offset + promptH).map((l, i) => (
           <Text key={i} wrap="truncate">
@@ -366,7 +377,8 @@ function RoleDetail({
           </Text>
         ))}
       </ScrollArea>
-      <LaunchButtons mode={perm} onModeChange={setPerm} profile={profile} onProfileChange={setProfile} onConfirmingChange={setConfirming} short count={1} running={!!hq} onLaunch={(mode) => launch([role.id], role.id, mode)} />
+      {!showPrompt && <Box flexGrow={1} />}
+      <LaunchButtons mode={perm} onModeChange={setPerm} profile={profile} onProfileChange={setProfile} provider={provider} onProviderChange={setProvider} onConfirmingChange={setConfirming} collapsed={!optsOpen} onToggleOptions={toggleOpts} short count={1} running={!!hq} onLaunch={(mode) => launch([role.id], role.id, mode)} />
       <Box flexDirection="row" flexShrink={0} height={1}>
         <Button variant="secondary" label={picked ? '− Quitar de la selección' : `${g.add} Añadir a la selección`} onClick={() => toggleSelection(role.id)} />
         <Button variant="secondary" label={`${g.edit} Editar`} onClick={onEdit} />
@@ -438,7 +450,9 @@ function RoleForm({ initial, isNew, width, height, onDone }: { initial: Draft; i
     onDone(id);
   };
   useFormState(JSON.stringify(d) !== JSON.stringify(initial), save, d.name.trim() || d.title.trim() || 'Nuevo rol');
-  useFormKeys(['rf-name', 'rf-title', 'rf-desc'], save, () => onDone());
+  // Claude's aliases only make sense on Claude itself: other providers take a free model id.
+  const ownModel = !!d.provider && d.provider !== 'claude';
+  useFormKeys(ownModel ? ['rf-name', 'rf-title', 'rf-desc', 'rf-model'] : ['rf-name', 'rf-title', 'rf-desc'], save, () => onDone());
   const preview = { ...d, id: d.id || 'new', file: '', scope: d.scope } as Role;
 
   // Short panels drop the section dividers and the prompt preview so the buttons stay visible.
@@ -485,9 +499,28 @@ function RoleForm({ initial, isNew, width, height, onDone }: { initial: Draft; i
       </Box>
       {!compact && <Divider title="Comportamiento" width={inner} color={color} />}
       <Box flexDirection="row" flexShrink={0}>
-        <Text color={MUTED}>Modelo    </Text>
-        <Toggle label="Modelo" value={d.model ?? ''} onChange={(m) => set('model', m || undefined)} options={MODELS.map((m) => ({ value: m, label: m || 'por defecto' }))} />
+        <Box flexShrink={0}>
+          <Text color={MUTED}>Proveedor </Text>
+        </Box>
+        <Button
+          variant="secondary"
+          label={`${d.provider ?? 'claude'} ${g.sep} cambiar`}
+          onClick={() => {
+            const ids = listProviders().map((x) => x.id);
+            const next = ids[(ids.indexOf(d.provider ?? 'claude') + 1) % ids.length]!;
+            set('provider', next === 'claude' ? undefined : next);
+          }}
+        />
+        <Text color={MUTED}> {listProviders().find((x) => x.id === (d.provider ?? 'claude'))?.name}</Text>
       </Box>
+      {ownModel ? (
+        <TextField id="rf-model" label="Modelo    " value={d.model ?? ''} onChange={(v) => set('model', v.trim() || undefined)} width={inner - 27} />
+      ) : (
+        <Box flexDirection="row" flexShrink={0}>
+          <Text color={MUTED}>Modelo    </Text>
+          <Toggle label="Modelo" value={d.model ?? ''} onChange={(m) => set('model', m || undefined)} options={MODELS.map((m) => ({ value: m, label: m || 'por defecto' }))} />
+        </Box>
+      )}
       <Box flexDirection="row" flexShrink={0}>
         <Text color={MUTED}>Guardar en </Text>
         <Toggle

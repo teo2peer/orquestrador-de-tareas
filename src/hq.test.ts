@@ -44,6 +44,16 @@ function setup() {
   return { hq, agent, tool };
 }
 
+describe('memory', () => {
+  test('save then search finds the note; empty input is rejected', () => {
+    const { tool } = setup();
+    expect(() => tool('memory', { action: 'save', text: ' ' })).toThrow('empty');
+    tool('memory', { action: 'save', text: 'La API usa tokens JWT con expiración corta' });
+    expect(tool('memory', { action: 'search', text: 'expiracion jwt' })).toContain('[note]');
+    expect(tool('memory', { action: 'search', text: 'zzzinexistente' })).toBe('No matches.');
+  });
+});
+
 describe('ask_user', () => {
   test('options reach the message and the notice', () => {
     const { hq, tool } = setup();
@@ -566,14 +576,14 @@ describe('wake-ups (T3/T6)', () => {
 });
 
 describe('context housekeeping (T4)', () => {
-  function ctxTeam(profile: 'saver' | 'max', fresh = false) {
+  function ctxTeam(profile: 'saver' | 'max', fresh = false, writes = false) {
     const hq = newHQ(profile);
     hq.lead = 'cto';
     hq.wakeDelayMs = 10;
     hq.housekeepDelayMs = 0;
     hq.commandTimeoutMs = { '/clear': 40, '/compact': 40 };
     for (const id of ['cto', 'qa'])
-      hq.agents.set(id, { id, role: { ...role, id, fresh: id === 'qa' ? fresh : undefined }, status: 'working', task: '', children: [], sessionId: 's', tmux: 't', inbox: [], timeline: [], stopBlocks: 0 });
+      hq.agents.set(id, { id, role: { ...role, id, writes: id === 'qa' ? writes : false, fresh: id === 'qa' ? fresh : undefined }, status: 'working', task: '', children: [], sessionId: 's', tmux: 't', inbox: [], timeline: [], stopBlocks: 0 });
     const commands: [string, string][] = [];
     (hq as any).typeCommand = (a: { id: string }, cmd: string) => commands.push([a.id, cmd]);
     (hq as any).typeInto = () => {};
@@ -620,8 +630,17 @@ describe('context housekeeping (T4)', () => {
     expect(commands).toEqual([]);
   });
 
-  test('compact between tasks above 120k, reporting before → after on the next turn', async () => {
+  test('a saver reader above 120k restarts from the orq summary instead of paying for /compact', async () => {
     const { commands, stop, qa, settle } = ctxTeam('saver');
+    qa.ctxTokens = 150_000;
+    stop('qa');
+    await settle();
+    expect(commands).toEqual([['qa', '/clear']]);
+    expect(qa.primer).toContain('# Session resumed (light)');
+  });
+
+  test('compact between tasks above 120k, reporting before → after on the next turn', async () => {
+    const { commands, stop, qa, settle } = ctxTeam('saver', false, true);
     const t = path.join(cwd, 'ctx.jsonl');
     fs.writeFileSync(t, JSON.stringify({ type: 'assistant', message: { id: 'x', usage: { input_tokens: 150_000 } } }) + '\n');
     qa.transcriptPath = t;
@@ -1235,7 +1254,7 @@ describe('compact guard', () => {
     hq.housekeepDelayMs = 0;
     hq.commandTimeoutMs = { '/clear': 20, '/compact': 20 };
     simulateTmux(hq);
-    const a: any = { id: 'qa', role: { ...role, id: 'qa' }, status: 'idle', task: '', children: [], sessionId: 's', tmux: 't', inbox: [], timeline: [], stopBlocks: 0 };
+    const a: any = { id: 'qa', role: { ...role, id: 'qa', writes: true }, status: 'idle', task: '', children: [], sessionId: 's', tmux: 't', inbox: [], timeline: [], stopBlocks: 0 };
     hq.agents.set('qa', a);
     const commands: string[] = [];
     (hq as any).typeCommand = (_: unknown, cmd: string) => commands.push(cmd);

@@ -13,6 +13,8 @@ export type Role = {
   color: string;
   writes: boolean;
   model?: string;
+  /** Provider id (see providers.ts): claude (default), zai, glm, minimax, opencode or one of ~/.orq/providers.yaml. */
+  provider?: string;
   description: string;
   prompt: string; // resolved prompt (own body, or the source file body)
   source?: string; // optional external prompt file (role packs)
@@ -85,6 +87,8 @@ export type RunMeta = {
   mode?: TeamMode;
   /** Absent on older runs: means 'max'. */
   profile?: CostProfile;
+  /** Session-wide provider override; absent: each role's own. */
+  provider?: string;
   lead?: string;
   /** Session title: provisional (first user message / first task) until the lead or the user sets it. */
   title?: string;

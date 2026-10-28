@@ -1,3 +1,4 @@
+import { cycleProvider } from '../providers.ts';
 import { Box, Text } from 'ink';
 import React, { useEffect, useMemo, useState } from 'react';
 import { deleteDepartment, makeId, saveDepartment } from '../library.ts';
@@ -27,13 +28,14 @@ import {
   Toggle,
   gridLayout as cardLayout,
   useFocusState,
+  useLaunchOptions,
   useScroll,
 } from './widgets.tsx';
 
 const NEW = '__new__';
 
 export function Teams({ height: fullH }: { height: number }) {
-  const { depts, roles, reload, confirmLaunch, composeMode, setComposeMode, profile, setProfile, hq } = useApp();
+  const { depts, roles, reload, confirmLaunch, composeMode, setComposeMode, profile, setProfile, provider, setProvider, hq } = useApp();
   // One row on top picks how the team is composed; the rest is the role grid or the area plan.
   const height = fullH - 1;
   const auto = composeMode !== 'dept';
@@ -57,12 +59,15 @@ export function Teams({ height: fullH }: { height: number }) {
 
   const panelW = side ? Math.min(80, Math.max(56, Math.floor(cols * 0.42))) : 0;
   const gridW = side ? cols - panelW - 1 : cols;
-  const tabsH = compactTabs ? 1 : 3;
+  // Many categories do not fit as tabs (labels shrink to 2 letters): one row that steps through them.
+  const manyCats = new Set(depts.map((d) => d.category)).size > 4;
+  const tabsH = compactTabs || manyCats ? 1 : 3;
   const cardH = compactCards ? TEAM_H_COMPACT : TEAM_H;
   const cardW = oneCol ? gridW - 2 : TEAM_W;
   const categories = [...new Set(depts.map((d) => d.category))];
   const cats = ['__all__', ...categories];
   const cat = category === '__all__' || categories.includes(category) ? category : '__all__';
+  const stepCat = (d: number) => setCategory(cats[(cats.indexOf(cat) + d + cats.length) % cats.length]!);
   const q = query.trim().toLowerCase();
   const shown = depts.filter((d) => (cat === '__all__' || d.category === cat) && (!q || `${d.name} ${d.description} ${d.category}`.toLowerCase().includes(q)));
   const items: (Department | typeof NEW)[] = [...shown, NEW];
@@ -119,6 +124,7 @@ export function Teams({ height: fullH }: { height: number }) {
   const nextMode = () => setComposeMode(COMPOSE_MODES[(COMPOSE_MODES.indexOf(composeMode) + 1) % COMPOSE_MODES.length]!);
   useShortcuts('teams/mode', [{ keys: ['p'], run: nextMode }], { active: auto || (!editing && !detail) });
   // Cost profile of the next launch (o; k is vi navigation): only meaningful without a session.
+  useShortcuts('teams/provider', [{ keys: ['v'], run: () => setProvider(cycleProvider(provider)) }], { active: !editing && !hq });
   useShortcuts('teams/profile', [{ keys: ['o'], run: () => setProfile(PROFILES[(PROFILES.indexOf(profile) + 1) % PROFILES.length]!) }], { active: !editing && !hq });
 
   // With an Auto mode there is no department grid: the panel takes the whole width.
@@ -171,16 +177,27 @@ export function Teams({ height: fullH }: { height: number }) {
       <Box flexDirection="row" height={height}>
         <Box flexDirection="column" width={gridW}>
           <Box flexDirection="row" height={tabsH} flexShrink={0}>
-            <ChromeTabs
-              width={gridW - searchW}
-              compact={compactTabs}
-              tabs={[
-                { id: '__all__', label: 'Todos', badge: String(depts.length), badgeColor: MUTED },
-                ...categories.map((c) => ({ id: c, label: c, badge: String(depts.filter((d) => d.category === c).length), badgeColor: MUTED })),
-              ]}
-              active={cat}
-              onSelect={setCategory}
-            />
+            {manyCats ? (
+              <Box width={gridW - searchW} flexDirection="row" alignItems="flex-end">
+                <Text color={MUTED}> Categoría: </Text>
+                <Button label={g.prev} onClick={() => stepCat(-1)} />
+                <Text bold> {cat === '__all__' ? 'Todas' : cat} </Text>
+                <Text color={MUTED}>({cat === '__all__' ? depts.length : depts.filter((d) => d.category === cat).length}) </Text>
+                <Button label={g.next} onClick={() => stepCat(1)} />
+                <Text color={MUTED}> (teclas [ y ])</Text>
+              </Box>
+            ) : (
+              <ChromeTabs
+                width={gridW - searchW}
+                compact={compactTabs}
+                tabs={[
+                  { id: '__all__', label: 'Todos', badge: String(depts.length), badgeColor: MUTED },
+                  ...categories.map((c) => ({ id: c, label: c, badge: String(depts.filter((d) => d.category === c).length), badgeColor: MUTED })),
+                ]}
+                active={cat}
+                onSelect={setCategory}
+              />
+            )}
             <Box width={searchW} flexDirection="column" justifyContent="flex-end">
               <TextField id="team-search" label="Buscar:" value={query} onChange={(v) => (setQuery(v), setNav({ zone: 'grid', index: 0 }))} placeholder="nombre o categoría" width={searchW - 8} />
             </Box>
@@ -278,7 +295,7 @@ function TeamSummary({
   onCopy: () => void;
   onDelete: () => void;
 }) {
-  const { launch, hq, perm, setPerm, confirmLaunch, profile, setProfile } = useApp();
+  const { launch, hq, perm, setPerm, confirmLaunch, profile, setProfile, provider, setProvider } = useApp();
   const cursor = useKeyboardCursor();
   const [mc, setMc] = useState(0); // member under the keyboard cursor
   const members = dept.roles.map((id) => roleMap.get(id)).filter(Boolean) as Role[];
@@ -286,6 +303,7 @@ function TeamSummary({
   const [excluded, setExcluded] = useState<Set<string>>(new Set());
   const [lead, setLead] = useState<string | undefined>(dept.lead);
   const [confirming, setConfirming] = useState(false);
+  const [optsOpen, toggleOpts] = useLaunchOptions();
   const team = members.filter((m) => !excluded.has(m.id));
   const effLead = lead && !excluded.has(lead) && roleMap.has(lead) ? lead : team[0]?.id;
   const leadRole = effLead ? roleMap.get(effLead) : undefined;
@@ -297,29 +315,26 @@ function TeamSummary({
     .join(', ');
   const color = toHex(dept.color);
   const inner = width - 2;
-  const tileW = Math.floor((inner - 2) / 2);
   // Height budget (rows actually painted, no border): header 1 · description · coordinator
   // (divider + 7-row sprite, or one line when short) · members divider · member list ·
   // summary divider + 1 · directory · launch buttons.
-  const roomy = height >= 32;
+  const roomy = height >= 46;
   const descLines = wrap(dept.description || 'Sin descripción', inner, roomy ? 3 : height >= 24 ? 2 : 1);
   const showDir = height >= 26;
-  const fixed = 1 + descLines.length + (roomy ? 1 + 7 : 1) + 1 + 2 + (showDir ? 1 : 0) + launchButtonsHeight({ running: !!hq, confirming, profile: true });
+  const fixed = 1 + descLines.length + (roomy ? 1 + 7 : 1) + 1 + 2 + (showDir ? 1 : 0) + launchButtonsHeight({ running: !!hq, confirming, profile: true, collapsed: !optsOpen });
   const listH = Math.max(2, height - fixed);
-  const tileRows = Math.ceil(members.length / 2);
-  const scroll = useScroll(tileRows * 4, listH);
-  const firstRow = Math.floor(scroll.offset / 4);
+  // One line per member: the list stays readable with 15 roles.
+  const scroll = useScroll(members.length, listH);
   const toggle = (id: string) => {
     const next = new Set(excluded);
     next.has(id) ? next.delete(id) : next.add(id);
     setExcluded(next);
   };
   const moveMember = (key: string) => {
-    const n = moveIndex(mc, members.length, 2, key, Math.max(1, Math.floor(listH / 4)));
+    const n = moveIndex(mc, members.length, 1, key, Math.max(1, listH));
     setMc(n);
-    const row = Math.floor(n / 2);
-    if (row < firstRow) scroll.scrollTo(row * 4);
-    else if ((row + 1) * 4 > scroll.offset + listH) scroll.scrollTo((row + 1) * 4 - listH);
+    if (n < scroll.offset) scroll.scrollTo(n);
+    else if (n + 1 > scroll.offset + listH) scroll.scrollTo(n + 1 - listH);
   };
   const current = members[mc];
   useShortcuts(
@@ -399,32 +414,33 @@ function TeamSummary({
           )}
         </Box>
       )}
-      <Divider title={`Miembros ${g.sep} clic: incluir/excluir ${g.sep} ${g.star} coordinador`} width={inner} color={color} />
-      <ScrollArea scroll={scroll} height={listH} color={color} onWheel={(d: number) => scroll.onWheel(d > 0 ? 4 : -4)} flexDirection="row" flexWrap="wrap">
+      <Divider title={`Miembros ${g.sep} clic: incluir ${g.sep} ${g.star} coordinador`} width={inner} color={color} />
+      <ScrollArea scroll={scroll} height={listH} color={color} onWheel={(d: number) => scroll.onWheel(Math.sign(d) * 2)}>
         {members.length === 0 && <Text color={MUTED}>El equipo no tiene miembros.</Text>}
-        {members.slice(firstRow * 2).map((m, i) => {
+        {members.slice(scroll.offset, scroll.offset + listH).map((m, i) => {
+          const idx = scroll.offset + i;
           const on = !excluded.has(m.id);
-          const here = showCursor && firstRow * 2 + i === mc;
+          const here = showCursor && idx === mc;
           return (
-            <Box key={m.id} width={tileW} height={4} flexDirection="row" marginRight={i % 2 === 0 ? 1 : 0}>
-              <Clickable onClick={() => (setMc(firstRow * 2 + i), cursor.hide(), toggle(m.id))} flexDirection="row" flexGrow={1} aria-role="checkbox" aria-label={m.name} aria-state={{ checked: on }}>
-                <MiniSprite role={m} tick={tick + i * 2} dim={!on} />
-                <Box flexDirection="column" marginLeft={1} flexGrow={1}>
+            <Box key={m.id} height={1} flexDirection="row">
+              <Clickable onClick={() => (setMc(idx), cursor.hide(), toggle(m.id))} flexDirection="row" flexGrow={1} flexShrink={1} aria-role="checkbox" aria-label={m.name} aria-state={{ checked: on }}>
+                <Box width={Math.min(22, Math.floor(inner / 2))} flexShrink={0}>
                   <Text bold={on || here} inverse={here} color={on ? toHex(m.color) : MUTED} wrap="truncate">
                     {here ? `${g.cursor} ` : ''}
                     {on ? g.checked : g.unchecked} {m.name}
                   </Text>
+                </Box>
+                <Box flexShrink={1}>
                   <Text color={MUTED} wrap="truncate">
                     {m.title}
                   </Text>
-                  <Text wrap="truncate">
-                    {writesLabel(m)}
-                    {m.model ? <Text color={INFO}> {m.model}</Text> : null}
-                  </Text>
                 </Box>
               </Clickable>
-              <Clickable onClick={() => on && setLead(m.id)} width={2} aria-role="radio" aria-label={`Coordinador: ${m.name}`} aria-state={{ checked: effLead === m.id }}>
-                <Text color={effLead === m.id ? WARN : MUTED}>{effLead === m.id ? g.star : g.starOff}</Text>
+              <Box flexShrink={0} marginLeft={1}>
+                {m.writes ? <Text color={WARN}>{g.edit}</Text> : <Text color={MUTED}>{g.readOnly}</Text>}
+              </Box>
+              <Clickable onClick={() => on && setLead(m.id)} width={3} aria-role="radio" aria-label={`Coordinador: ${m.name}`} aria-state={{ checked: effLead === m.id }}>
+                <Text color={effLead === m.id ? WARN : MUTED}> {effLead === m.id ? g.star : g.starOff}</Text>
               </Clickable>
             </Box>
           );
@@ -445,7 +461,11 @@ function TeamSummary({
         onModeChange={setPerm}
         profile={profile}
         onProfileChange={setProfile}
+        provider={provider}
+        onProviderChange={setProvider}
         onConfirmingChange={setConfirming}
+        collapsed={!optsOpen}
+        onToggleOptions={toggleOpts}
         count={team.length}
         running={!!hq}
         onLaunch={(mode) => launch(team.map((m) => m.id), effLead, mode)}

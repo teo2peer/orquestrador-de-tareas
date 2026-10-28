@@ -5,7 +5,7 @@ import path from 'node:path';
 import { ORQ_HOME } from '../paths.ts';
 import type { CostProfile, ResumeMode } from '../types.ts';
 
-export type Prefs = { resumeMode?: ResumeMode; profile?: CostProfile };
+export type Prefs = { resumeMode?: ResumeMode; profile?: CostProfile; /** '' = each role's own provider */ provider?: string };
 
 export const prefsFile = () => path.join(ORQ_HOME, 'ui.json');
 
@@ -19,6 +19,7 @@ export function loadPrefs(file = prefsFile()): Prefs {
     if (!data || typeof data !== 'object') return {};
     const out: Prefs = {};
     if (PROFILES.includes(data.profile)) out.profile = data.profile;
+    if (typeof data.provider === 'string') out.provider = data.provider;
     if (RESUME_MODES.includes(data.resumeMode)) out.resumeMode = data.resumeMode;
     return out;
   } catch {

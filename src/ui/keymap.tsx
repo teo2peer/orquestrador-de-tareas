@@ -30,6 +30,12 @@ const NAV_KEYS = new Set(['up', 'down', 'left', 'right', 'tab', 'shift+tab', 'pa
 export const RESERVED_ACCESS = new Set(['j', 'k', 'l']);
 
 /**
+ * Characters macOS terminals send for Option+letter when Option is not set as Meta
+ * (Terminal.app, VS Code and iTerm2 defaults), mapped to the Alt shortcut they stand for.
+ */
+const MAC_OPTION: Record<string, string> = { 'ß': 's', 'å': 'a', '®': 'r' };
+
+/**
  * Names a key press answers to, most specific first: "up", "enter", "esc", "space",
  * "delete", "ctrl+s", "alt+1", "shift+tab", or the character itself (letters lowercased,
  * so Caps Lock does not matter). j/k also answer to down/up. With `singleKey` off,
@@ -55,6 +61,7 @@ export function keyNames(input: string, key: Partial<Key>, singleKey = true): st
   if (key.ctrl) return input.length === 1 ? [`ctrl+${ch}`] : [];
   if (input === ' ') return ['space'];
   if (input.length !== 1) return [];
+  if (MAC_OPTION[input]) return [`alt+${MAC_OPTION[input]}`, input];
   if (key.meta) return [`alt+${ch}`, ch, ...(ch === 'j' ? ['down'] : ch === 'k' ? ['up'] : [])];
   if (!singleKey) return [];
   return [ch, ...(ch === 'j' ? ['down'] : ch === 'k' ? ['up'] : [])];
@@ -464,7 +471,7 @@ type FooterDef = { mode: Mode; items: FooterItem[]; tail?: string };
 
 /** Footer copy by context (ux-writer v3). {n} and {exit} are filled at render time. */
 export const FOOTER = {
-  mouse: { mode: 'nav', items: [['clic y rueda', ''], ['flechas:', 'teclado'], ['1-6', 'pestañas'], ['q', 'salir']] },
+  mouse: { mode: 'nav', items: [['clic y rueda', ''], ['⌥S', 'copiar texto'], ['1-6', 'pestañas'], ['q', 'salir']] },
   'teams.grid': { mode: 'nav', items: [['←↑↓→', 'mover'], ['↵', 'detalle'], ['l', 'lanzar'], ['n', 'nuevo'], ['e', 'editar']] },
   'teams.auto': { mode: 'nav', items: [['↵', 'crear y lanzar'], ['r', 'revisar'], ['a', 'reanalizar'], ['g', 'guardar'], ['p', 'modo']] },
   'teams.auto.loading': { mode: 'nav', items: [['p', 'modo']] },
@@ -667,6 +674,7 @@ export const HELP: HelpSection[] = [
       ['Editor: /', 'Filtrar roles'],
       ['p', 'Componer: Departamento / Auto por rol / Auto por partes'],
       ['o', 'Consumo del próximo lanzamiento: Ahorro / Equilibrado / Máximo'],
+      ['v', 'Proveedor del próximo lanzamiento: por rol / claude / claude-api / zai / glm / minimax / grok / gemini / openai / opencode'],
       ['Auto: ↵ · l', 'Crear y lanzar (pide confirmación)'],
       ['Auto: r · g · a', 'Revisar · guardar en este proyecto · reanalizar'],
       ['Revisar: Espacio · c', 'Incluir · cambiar coordinador'],

@@ -16,7 +16,7 @@
 [![Ink](https://img.shields.io/badge/UI-Ink%20%2B%20React-61dafb?logo=react&logoColor=black)](https://github.com/vadimdemedes/ink)
 [![Claude Code](https://img.shields.io/badge/agents-Claude%20Code-d97757)](https://docs.anthropic.com/en/docs/claude-code)
 [![MCP](https://img.shields.io/badge/protocol-MCP-6e40c9)](https://modelcontextprotocol.io)
-[![Tests](https://img.shields.io/badge/tests-684%20passing-brightgreen)](#-development)
+[![Tests](https://img.shields.io/badge/tests-704%20passing-brightgreen)](#-development)
 
 **Hire a team. Give it a goal. Watch it work.**
 
@@ -68,7 +68,8 @@ flowchart LR
 | Piece | What it does |
 |---|---|
 | **HQ** (`src/hq.ts`) | Starts the run, writes each agent's launch files (system prompt, `settings.json`, MCP config), routes messages, tracks status, compacts idle agents. |
-| **company MCP** (`src/mcp-server.ts`) | The office intranet: `team`, `send_message`, `delegate_task`, `report`, `log`, `set_status`, `inbox`, `ask_user`, `set_title`, `request_hire`. |
+| **company MCP** (`src/mcp-server.ts`) | The office intranet: `team`, `send_message`, `delegate_task`, `report`, `log`, `memory`, `set_status`, `inbox`, `ask_user`, `set_title`, `request_hire`. |
+| **Run index** (`src/db.ts`) | SQLite + FTS5 at `<project>/.orq/runs/orq.db`: indexes every run's events (`events.jsonl` stays the source of truth) for cheap resume and the `memory` tool. |
 | **tmux** (`src/tmux.ts`) | Every agent is a real, attachable Claude Code terminal. Detach orq and they keep working. |
 | **Hooks** (`src/hook.ts`, `src/orq-guard.ts`) | Forward Claude Code hooks to HQ and block agents from reading orq's own data (other agents' transcripts, secrets). |
 | **Statusline** (`src/statusline.ts`) | Records your 5 h / weekly subscription usage and shows it in the top bar. |
@@ -83,8 +84,8 @@ flowchart LR
 - 🗺 **Auto team by area** — one writer per disjoint set of paths (`src/ui`, `src/*`, `*`), so agents never step on each other's files.
 - 💬 **Real collaboration** — leads delegate with goal, context, constraints and owned paths; members report back in ≤10 lines.
 - 🙋 **Human in the loop, only when it matters** — agents ask you one question with 2–4 quick‑reply options, recommended first.
-- 💸 **Cost profiles** — `max`, `balanced` and `saver`: restricted MCPs, no auto‑memory, per‑role tool sets, cheaper models for read‑only verifiers, compaction at 120k.
-- ↺ **Light resume** — a fresh session plus an event‑based summary (~3k tokens, no LLM) instead of replaying the whole transcript. `full` resume is still there if you want it.
+- 💸 **Cost profiles** — `max`, `balanced` and `saver`: restricted MCPs, no auto‑memory, per‑role tool sets, cheaper models for read‑only verifiers, compaction at 120k (`saver` readers restart from orq's summary + `memory` notes instead of paying for `/compact`).
+- ↺ **Light resume** — a fresh session plus an event‑based summary (~3k tokens, no LLM) instead of replaying the whole transcript. Agents can `memory save` facts that survive `/clear` and resume, and `memory search` past messages and notes (this run or the whole project) instead of replaying a transcript. `full` resume is still there if you want it.
 - 🔐 **Permission modes** — `auto`, `auto-insecure` and `yolo`, chosen per run.
 - 🛡 **Isolation guard** — agents can never read `.orq/` or `~/.orq`, enforced twice (deny rules + hook, which covers Bash too).
 - 📦 **Role packs** — import any folder of Claude/OpenCode agent Markdown files, local or over `scp`.
@@ -122,6 +123,10 @@ orq                               open the UI in the current directory
 orq --resume                      list sessions (this directory / all)
 orq --resume <runId>              resume or reattach a session
 orq --resume --last               resume the latest session of this directory
+                                  (without a dialog each agent resumes full if its prompt cache is warm, light if it went cold)
+orq web [--port N]                the same office in your browser (127.0.0.1 only): create teams, launch, chat, answer, resume
+orq search <words>                search messages and notes of past sessions in this directory
+orq stats [runId|--last]          where a session's tokens went (by type, by agent, cache hit, hints)
 orq import <dir|host:/dir> [pack] import Markdown agents as roles
 ```
 
@@ -135,6 +140,36 @@ orq import <dir|host:/dir> [pack] import Markdown agents as roles
 | ↺ **Sesiones** | Past and live runs: resume, reattach, inspect. |
 
 ---
+
+## 🔌 Providers (other models and consoles)
+
+Each role can run on a different provider (`provider:` in its frontmatter, or the **Proveedor** toggle in the role editor). Default: `claude`.
+
+| Provider | How it runs | Needs |
+|---|---|---|
+| `claude` | Claude Code, Anthropic | `claude` in `PATH` |
+| `claude-api` | Claude Code billed through your API key instead of the subscription (claude may ask once to confirm the key) | `ANTHROPIC_API_KEY` |
+| `zai`, `glm`, `minimax` | Claude Code pointed at their Anthropic-compatible endpoint (hooks, MCP and delivery work unchanged) | `ZAI_API_KEY` / `ZHIPU_API_KEY` / `MINIMAX_API_KEY` in your shell env |
+| `grok`, `gemini`, `openai` | orq's own headless runner (`src/runner.ts`) over their OpenAI-compatible chat API, in the agent's tmux pane. Tools: Bash, Read, Write/Edit (writers only) + the `company` tools; same hooks and `.orq/` guard | `XAI_API_KEY` / `GEMINI_API_KEY` / `OPENAI_API_KEY` |
+| `opencode` | `opencode` TUI; a plugin (`src/opencode-plugin.ts`) forwards its events to HQ as hooks | `opencode` in `PATH`, models from its own config (`model: provider/model` on the role) |
+
+Choosing the provider, all from the UI:
+- **Per role**: **Proveedor** toggle in the role editor.
+- **Whole session**: the **Proveedor** row of every launch panel (Equipos, Roles, Auto) cycles *Por rol → claude → zai → glm → minimax → opencode* (click or `v`). Anything but *Por rol* overrides the provider of every agent of that session, including later hires; it is saved with the run and restored on resume. The Oficina header shows the active one.
+
+The key is read from your env var when the agent starts and is never written to disk. Endpoints and models change often:
+override or add providers in `~/.orq/providers.yaml`:
+
+```yaml
+zai:
+  model: glm-4.6          # sets every Claude model alias (and subagents) for that endpoint
+mi-proxy:
+  baseUrl: https://proxy.example/anthropic
+  keyEnv: MI_PROXY_KEY
+```
+
+Limits of `opencode` agents: no coordinator board injected into prompts (use `team`), no token/context accounting
+and no `/clear`/`/compact` by orq. The `openai`-kind runner is leaner than Claude Code: no subagents, no web tools, a resumed agent starts a fresh conversation. It reports the API's prompt size as the agent's context, and understands `/clear` and `/compact` (local, no model call) so the cost profiles work. `opencode` agents are never sent those commands. Default models of `grok`/`gemini`/`openai` are examples: set yours in `providers.yaml`. A launch is refused up front if a provider's key or binary is missing.
 
 ## 🏬 Default departments
 
@@ -179,7 +214,7 @@ in `~/.orq`. Existing files are never overwritten, so your edits in the UI are k
 ## 🛠 Development
 
 ```sh
-bun test            # 684 tests, isolated from your real ~/.orq and tmux server
+bun test            # 704 tests, isolated from your real ~/.orq and tmux server
 bun run typecheck   # tsc --noEmit
 bun start           # run from source
 ```
@@ -199,6 +234,7 @@ src/
 ├── stack.ts         auto team by stack
 ├── areas.ts         auto team by code area
 ├── resume.ts        light resume summaries
+├── db.ts            SQLite/FTS5 run index
 ├── orq-guard.ts     isolation guard
 └── ui/              Ink components: Teams, Roles, Office, Terminals, Sessions…
 ```

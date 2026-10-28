@@ -234,7 +234,7 @@ describe('estimateResume: recommended mode by cache age', () => {
 
 describe('HQ restore', () => {
   /** Restore a run without touching tmux/claude: launch is stubbed. */
-  function restore(resumeMode: 'light' | 'full' | undefined, transcript?: string, events: Record<string, any>[] = EVENTS, live = false) {
+  function restore(resumeMode: 'light' | 'full' | 'auto' | undefined, transcript?: string, events: Record<string, any>[] = EVENTS, live = false) {
     const cwd = fs.mkdtempSync(path.join(tmp, 'cwd-'));
     const m = meta({ cwd, dir: path.join(cwd, '.orq', 'runs', RUN_ID) });
     m.agents[1]!.transcript = transcript;
@@ -280,6 +280,20 @@ describe('HQ restore', () => {
     expect(openWork).not.toContain('open task 2');
     for (const i of [3, 4, 5, 6, 7]) expect(openWork).toContain(`open task ${i}`);
     expect(s).toMatch(/Latest goal \(open task\)\n.*open task 8/);
+  });
+
+  test("'auto' resumes warm agents full and cold ones light", () => {
+    const stamp = (name: string, at: number) => {
+      const f = path.join(tmp, `${name}.jsonl`);
+      fs.writeFileSync(f, JSON.stringify({ type: 'assistant', timestamp: new Date(at).toISOString(), message: { id: name, usage: { input_tokens: 10, cache_creation: { ephemeral_1h_input_tokens: 10 } } } }) + '\n');
+      return f;
+    };
+    const warm = restore('auto', stamp('auto-warm', Date.now() - 60_000), TRACKED);
+    expect(warm.launched).toContainEqual(['backend', true]);
+    const cold = restore('auto', stamp('auto-cold', Date.now() - 2 * 3_600_000), TRACKED);
+    expect(cold.launched).toContainEqual(['backend', false]);
+    expect(cold.hq.agents.get('backend')!.inbox[0]!.body).toContain('# Session resumed (light)');
+    expect(restore('auto', undefined, TRACKED).launched).toContainEqual(['backend', false]);
   });
 
   test('undelivered messages are re-queued: light, after the summary', () => {

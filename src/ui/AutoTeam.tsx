@@ -32,7 +32,7 @@ import { moveIndex, useKeyboardCursor, useModal, useShortcuts } from './keymap.t
 import { Clickable } from './mouse.tsx';
 import { toHex } from './sprites.ts';
 import { DANGER, INFO, MUTED, SUCCESS, TEXT, WARN } from './theme.ts';
-import { BackButton, Button, Checkbox, Divider, LaunchButtons, launchButtonsHeight, Pill, ScrollArea, useScroll } from './widgets.tsx';
+import { BackButton, Button, Checkbox, Divider, LaunchButtons, launchButtonsHeight, Pill, ScrollArea, useLaunchOptions, useScroll } from './widgets.tsx';
 
 // ------------------------------------------------------------------ drafts
 
@@ -164,7 +164,7 @@ function Preview({
   onReanalyse: () => void;
   onUseDept: () => void;
 }) {
-  const { roles, hq, perm, setPerm, profile, setProfile, launchRoles, reload, setToast, setError } = useApp();
+  const { roles, hq, perm, setPerm, profile, setProfile, provider, setProvider, launchRoles, reload, setToast, setError } = useApp();
   const modal = useModal();
   const cursor = useKeyboardCursor();
   const tick = useTick(true);
@@ -204,6 +204,7 @@ function Preview({
     ];
   }, [draft, team, lead]);
 
+  const [optsOpen, toggleOpts] = useLaunchOptions();
   const writers = team.filter((r) => r.writes).length;
   const leadRole = team[0];
   const narrow = cols < 100;
@@ -212,7 +213,7 @@ function Preview({
   const noteRows = 1 + (draft.save ? 0 : 1) + conflicts.length;
   const statusRows = area ? 1 : 0;
   const pillRow = area && hq ? 1 : 0;
-  const fixed = 1 + (draft.stack.length ? 1 : 0) + 1 + statusRows + noteRows + pillRow + launchButtonsHeight({ running: !!hq && !area, confirming, profile: true });
+  const fixed = 1 + (draft.stack.length ? 1 : 0) + 1 + statusRows + noteRows + pillRow + launchButtonsHeight({ running: !!hq && !area, confirming, profile: true, collapsed: !optsOpen });
   const listH = Math.max(rowH, height - fixed);
   const scroll = useScroll(rows.length * rowH, listH);
   const [ci, setCi] = useState(0);
@@ -375,8 +376,12 @@ function Preview({
         mode={perm}
         onModeChange={setPerm}
         onConfirmingChange={setConfirming}
+        collapsed={!optsOpen}
+        onToggleOptions={toggleOpts}
         profile={profile}
         onProfileChange={setProfile}
+        provider={provider}
+        onProviderChange={setProvider}
         count={toAdd.length}
         running={!!hq && !area}
         disabled={blocked}

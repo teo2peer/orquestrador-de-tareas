@@ -1,10 +1,11 @@
+import { launchIssue } from '../providers.ts';
 import { Box, Text, useStdin, useStdout } from 'ink';
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { HQ, runIsServed } from '../hq.ts';
 import { loadRun } from '../runs.ts';
-import { recommendResume } from '../resume.ts';
 import { PROJECT_DIR } from '../paths.ts';
 import { loadDepartments, loadRoles } from '../library.ts';
+import { type Alert, teamOf } from '../session.ts';
 import type { CostProfile, Department, Msg, Notice, PermMode, ResumeMode, Role, TeamMode } from '../types.ts';
 import { loadPrefs, savePrefs } from './prefs.ts';
 import { type ComposeMode, missingFrom } from './area-plan.ts';
@@ -46,7 +47,7 @@ type AppState = {
   drafts: DraftStore;
   launchRoles: (team: Role[], lead: string, mode?: PermMode, teamMode?: TeamMode) => number;
   /** Reopens a run; `mode` picks how stopped agents come back (light summary / full transcript). */
-  resume: (dir: string, mode?: ResumeMode) => Promise<void>;
+  resume: (dir: string, mode?: ResumeMode | 'auto') => Promise<void>;
   detachRun: () => void;
   stopRun: () => void;
   openEditor: (file: string) => void;
@@ -72,6 +73,9 @@ type AppState = {
   setPerm: (v: PermMode) => void;
   /** Cost profile of the next launch (remembered in ~/.orq/ui.json; default Máximo). */
   profile: CostProfile;
+  /** Provider forced on every agent of the next launch ('' = each role's own; remembered in ~/.orq/ui.json). */
+  provider: string;
+  setProvider: (p: string) => void;
   setProfile: (p: CostProfile) => void;
   selection: Set<string>; // loose roles picked in the Roles tab
   toggleSelection: (id: string) => void;
@@ -148,6 +152,8 @@ export function AppProvider({
   const [perm, setPerm] = useState<PermMode>('auto');
   const [profile, setProfileState] = useState<CostProfile>(() => loadPrefs().profile ?? 'max');
   const setProfile = (p: CostProfile) => (setProfileState(p), savePrefs({ profile: p }));
+  const [provider, setProviderState] = useState<string>(() => loadPrefs().provider ?? '');
+  const setProvider = (p: string) => (setProviderState(p), savePrefs({ provider: p }));
   const [composeMode, setComposeMode] = useState<ComposeMode>('dept');
   // Drafts live outside React state (typing must not re-render the whole app). The run's
   // drafts.json is attached synchronously while rendering, so boxes mounted with the new
@@ -207,25 +213,19 @@ export function AppProvider({
     setDepts(loadDepartments());
   };
 
-  // The team a run is launched as (the department its lead leads, also when launched alone):
-  // its rules and extra directories reach every agent.
-  const teamOf = (lead: string | undefined, ids: string[]) => {
-    const led = lead ? depts.filter((x) => x.lead === lead) : [];
-    // A lead of several teams: the one whose members best match the agents launched.
-    const score = (x: (typeof depts)[number]) => ids.filter((id) => x.roles.includes(id)).length - x.roles.filter((id) => !ids.includes(id)).length;
-    const d = led.sort((x, y) => score(y) - score(x))[0];
-    return d ? { dept: d.id, dirs: d.dirs } : {};
-  };
+  const teamFor = (lead: string | undefined, ids: string[]) => teamOf(depts, lead, ids);
 
   const launch = (roleIds: string[], lead: string | undefined, mode?: PermMode) => {
     const picked = roleIds.map((id) => roles.find((r) => r.id === id)).filter(Boolean) as Role[];
     if (!picked.length) return setError('Selecciona al menos un rol');
+    const issue = launchIssue(picked, hq?.provider ?? provider);
+    if (issue) return setError(issue);
     if (hq) {
       for (const r of picked) hq.hire(r);
       setToast(picked.length === 1 ? '1 agente añadido a la sesión' : `${picked.length} agentes añadidos a la sesión`);
     } else {
       const ordered = lead ? [...picked.filter((r) => r.id === lead), ...picked.filter((r) => r.id !== lead)] : picked;
-      const next = new HQ({ roles: ordered, lead, permMode: mode ?? perm, profile, ...teamOf(lead, roleIds) });
+      const next = new HQ({ roles: ordered, lead, permMode: mode ?? perm, profile, provider: provider || undefined, ...teamFor(lead, roleIds) });
       next.start();
       setHq(next);
     }
@@ -234,6 +234,8 @@ export function AppProvider({
 
   const launchRoles = (team: Role[], lead: string, mode?: PermMode, teamMode: TeamMode = 'area') => {
     if (!team.length) return (setError('No hay agentes que lanzar'), 0);
+    const issue = launchIssue(team, hq?.provider ?? provider);
+    if (issue) return (setError(issue), 0);
     if (hq) {
       if (teamMode === 'area') return (setError('Detén la sesión para componer por partes'), 0);
       const add = missingFrom(team, hq.agents.keys());
@@ -242,14 +244,14 @@ export function AppProvider({
       return add.length;
     }
     const ordered = [...team.filter((r) => r.id === lead), ...team.filter((r) => r.id !== lead)];
-    const next = new HQ({ roles: ordered, lead, permMode: mode ?? perm, mode: teamMode, profile, ...teamOf(lead, team.map((r) => r.id)) });
+    const next = new HQ({ roles: ordered, lead, permMode: mode ?? perm, mode: teamMode, profile, provider: provider || undefined, ...teamFor(lead, team.map((r) => r.id)) });
     next.start();
     setHq(next);
     setTab('office');
     return ordered.length;
   };
 
-  const resume = async (dir: string, mode?: ResumeMode) => {
+  const resume = async (dir: string, mode?: ResumeMode | 'auto') => {
     if (hq) return setError('Detén o desconecta la sesión actual antes de reanudar otra.');
     let meta: ReturnType<typeof loadRun>;
     try {
@@ -290,7 +292,7 @@ export function AppProvider({
   };
 
   return (
-    <Ctx.Provider value={{ roles, depts, reload, hq, tab, setTab, launch, launchRoles, drafts, composeMode, setComposeMode, resume, detachRun, stopRun, openEditor, toast, setToast, expandMsg, showMessage, perm, setPerm, profile, setProfile, selection, toggleSelection, clearSelection, toastError, setError, confirmLaunch, reply, openReply: setReply, closeReply: () => setReply(null), reduced, toggleMotion: () => (setLiveReducedMotion(!reduced), setReduced(!reduced)), form, setForm, saveForm: () => formSave.current?.(), unreadMsgs: Math.max(0, msgCount - seenMsgs), openAgent, showAgent, clearOpenAgent: () => setOpenAgent(null) }}>
+    <Ctx.Provider value={{ roles, depts, reload, hq, tab, setTab, launch, launchRoles, drafts, composeMode, setComposeMode, resume, detachRun, stopRun, openEditor, toast, setToast, expandMsg, showMessage, perm, setPerm, profile, setProfile, provider, setProvider, selection, toggleSelection, clearSelection, toastError, setError, confirmLaunch, reply, openReply: setReply, closeReply: () => setReply(null), reduced, toggleMotion: () => (setLiveReducedMotion(!reduced), setReduced(!reduced)), form, setForm, saveForm: () => formSave.current?.(), unreadMsgs: Math.max(0, msgCount - seenMsgs), openAgent, showAgent, clearOpenAgent: () => setOpenAgent(null) }}>
       {children}
     </Ctx.Provider>
   );
@@ -308,7 +310,8 @@ export function gridLayout(cols: number, rows: number) {
   return {
     side: cols >= WIDE_COLS, // detail panel beside the grid; otherwise full screen
     oneCol: cols < NARROW_COLS, // one full-width compact card per row (list)
-    compactCards: cols < WIDE_COLS || rows < SHORT_ROWS,
+    // Lists stay light: sprites live in the detail panel and the Oficina, not on every card.
+    compactCards: true,
     compactTabs: rows < SHORT_ROWS, // one-row ChromeTabs
   };
 }
@@ -358,20 +361,7 @@ export function useFormKeys(fields: string[], save: () => unknown, cancel: () =>
   useShortcuts('form/field', [], { active: active && !!focused && fields.includes(focused), footer: 'form.field' });
 }
 
-/** A pending item for the user: a stored notice or an agent blocked on a prompt in its terminal. */
-export type Alert = Omit<Notice, 'kind'> & { kind: Notice['kind'] | 'blocked' };
-
-/**
- * Notices plus one 'blocked' alert per agent waiting on its terminal. Blocked alerts are
- * derived from the agent state, so they disappear by themselves once the agent moves on.
- */
-export function alertsOf(hq: HQ | null): Alert[] {
-  if (!hq) return [];
-  const blocked = [...hq.agents.values()]
-    .filter((a) => a.status === 'waiting' && a.notice)
-    .map((a) => ({ id: `blocked:${a.id}`, kind: 'blocked' as const, from: a.id, text: a.notice! }));
-  return [...hq.notices, ...blocked];
-}
+export { type Alert, alertsOf } from '../session.ts';
 export const isPermission = (a: Alert) => a.kind === 'trust' || a.kind === 'bypass' || a.kind === 'blocked';
 
 /** "1 agente" / "3 agentes". */
@@ -512,12 +502,13 @@ export function launchConfirm(n: number, perm: PermMode | null, dir: string) {
 }
 
 /**
- * Mode for `orq --resume` (no dialog): what recommendResume (cheap) recommends for that run (warm
- * cache → full, otherwise light); the last choice, then light, if it cannot be estimated.
+ * Mode for `orq --resume` (no dialog): decided per agent ('auto': full where its prompt cache is
+ * still warm, light where it went cold); the last choice, then light, if the run cannot be read.
  */
-export function recommendedMode(dir: string): ResumeMode {
+export function recommendedMode(dir: string): ResumeMode | 'auto' {
   try {
-    return recommendResume(loadRun(dir)).recommended;
+    loadRun(dir);
+    return 'auto';
   } catch {
     return loadPrefs().resumeMode ?? 'light';
   }

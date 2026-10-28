@@ -1,6 +1,6 @@
 import fs from 'node:fs';
-import path from 'node:path';
 import { CACHE_WRITE_1H, COST_WEIGHTS, TTL_1H, TTL_5M, lastUsage } from './tokens.ts';
+import { readRunEvents } from './store.ts';
 import * as tmux from './tmux.ts';
 import type { RunMeta } from './types.ts';
 
@@ -16,6 +16,7 @@ const MAX_MESSAGES = 8;
 /** Older open tasks beyond this many are only counted (a newer task may well supersede them). */
 const MAX_OPEN = 5;
 const MAX_FILES = 25;
+const MAX_NOTES = 20;
 const MAX_TEAM = 20;
 const EDIT_TOOL = /^(Edit|MultiEdit|Write|NotebookEdit) (.+)$/;
 
@@ -26,23 +27,8 @@ const short = (s: string, n: number) => {
 };
 const clock = (ts: number) => new Date(ts).toLocaleString('es-ES', { hour12: false });
 
-function readEvents(dir: string): Record<string, any>[] {
-  try {
-    return fs
-      .readFileSync(path.join(dir, 'events.jsonl'), 'utf8')
-      .split('\n')
-      .filter(Boolean)
-      .flatMap((l) => {
-        try {
-          return [JSON.parse(l)];
-        } catch {
-          return [];
-        }
-      });
-  } catch {
-    return [];
-  }
-}
+/** Event kinds a summary reads. */
+export const SUMMARY_KINDS = ['message', 'timeline', 'edit', 'note'] as const;
 
 type Section = { title: string; lines: string[]; prio: number; keep: number };
 
@@ -81,6 +67,8 @@ export function buildResumeSummary(agentId: string, events: Record<string, any>[
   const files = [
     ...new Set((edits.length ? edits : fromTimeline()).map((f) => (meta.cwd && f.startsWith(meta.cwd + '/') ? f.slice(meta.cwd.length + 1) : f))),
   ].slice(-MAX_FILES);
+  // Durable notes the agent saved with the `memory` tool: the one thing it chose to carry over.
+  const notes = events.filter((e) => e.kind === 'note' && e.agent === agentId).slice(-MAX_NOTES);
   const msgLine = (m: Record<string, any>, n: number) => `- ${clock(m.ts)} [${m.type}] ${m.from} → ${m.to}: ${short(m.body, n)}`;
 
   const others = meta.agents.filter((a) => a.id !== agentId);
@@ -110,6 +98,7 @@ export function buildResumeSummary(agentId: string, events: Record<string, any>[
       prio: 2,
       keep: 2,
     },
+    { title: 'Your notes (facts you verified and saved with `memory`: trust them, do not re-read files only to confirm them)', lines: notes.map((n) => `- ${short(n.text, 400)}`), prio: 2, keep: 3 },
     {
       title: 'Your state',
       lines: [
@@ -136,7 +125,7 @@ export function buildResumeSummary(agentId: string, events: Record<string, any>[
   const head = [
     `# Session resumed (light)`,
     `Your previous Claude session was not reloaded, to save tokens. Below is a summary of where you left off,`,
-    `built from the company log of this run. Continue from here; use \`inbox\`, \`team\` and the files`,
+    `built from the company log of this run. Continue from here; use \`inbox\`, \`team\`, \`memory\` (search past messages and notes) and the files`,
     `on disk for anything else. Do not redo finished work.`,
   ].join('\n');
   const render = () =>
@@ -157,6 +146,13 @@ export function buildResumeSummary(agentId: string, events: Record<string, any>[
       out = render();
     }
   return out.length > SUMMARY_MAX_CHARS ? out.slice(0, SUMMARY_MAX_CHARS - 1) + '…' : out;
+}
+
+/** Whether a transcript's prompt cache is still warm (its last request is younger than the TTL). */
+export function cacheWarm(transcript?: string, now = Date.now()): boolean {
+  if (!transcript || !fs.existsSync(transcript)) return false;
+  const last = lastUsage(transcript);
+  return last?.at !== undefined && now - last.at < last.ttlMs;
 }
 
 /** Small fresh cache write a warm full resume still makes (the new prompt and a few headers), in tokens. */
@@ -231,8 +227,7 @@ export function recommendResume(meta: RunMeta, alive = isAlive, now = Date.now()
  */
 export function estimateResume(meta: RunMeta, alive = isAlive, now = Date.now(), rec = recommendResume(meta, alive, now)): ResumeEstimate {
   const agents = resumedAgents(meta, alive);
-  // Only the event kinds summaries read: filtered once instead of scanning everything per agent.
-  const events = readEvents(meta.dir).filter((e) => e.kind === 'message' || e.kind === 'timeline' || e.kind === 'edit');
+  const events = readRunEvents(meta.dir, meta.runId, SUMMARY_KINDS);
   const light = agents.reduce((n, a) => n + tokens(buildResumeSummary(a.id, events, meta).length), 0);
   return {
     ...rec,

@@ -1,3 +1,4 @@
+import { providerOf } from '../providers.ts';
 import { Box, Text, useInput } from 'ink';
 import stringWidth from 'string-width';
 import React, { useEffect, useState } from 'react';
@@ -112,6 +113,13 @@ const RIGHT_W = CARD_W - 11;
 /** Short model name: opus / sonnet / haiku / fable; «def.» without one. */
 // Nothing for the default model: a name only when one is explicit or the profile changes it.
 export const shortModel = (m?: string) => (m ? (/(opus|sonnet|haiku|fable)/i.exec(m)?.[1]?.toLowerCase() ?? m) : '');
+
+/** « · Proveedor: x» when the session forces one, or the non-Claude ones its roles use; '' for plain Claude. */
+export function providerStat(hq: { provider?: string; agents: Map<string, Agent> }) {
+  if (hq.provider) return ` ${g.sep} Proveedor: ${hq.provider}`;
+  const ids = [...new Set([...hq.agents.values()].map((a) => providerOf({ provider: a.role.provider }).id))].filter((id) => id !== 'claude');
+  return ids.length ? ` ${g.sep} Proveedor: ${ids.join('+')}` : '';
+}
 
 function AgentCard({ a, lead, selected, cursor, tick, onClick, width = CARD_W }: { a: Agent; lead: boolean; selected: boolean; cursor?: boolean; tick: number; onClick: () => void; width?: number }) {
   const model = useModel(a);
@@ -1032,7 +1040,7 @@ export function Office({ height }: { height: number }) {
   const head = officeHeader(floorW, {
     title: hq?.title,
     provisional: hq?.titleProvisional,
-    stats: hq ? `${nAgents(agents.length)} ${g.sep} ${working} trabajando ${g.sep} ${permText(hq.permMode)} ${g.sep} Consumo: ${PROFILE_SHORT[hq.profile]}` : '',
+    stats: hq ? `${nAgents(agents.length)} ${g.sep} ${working} trabajando ${g.sep} ${permText(hq.permMode)} ${g.sep} Consumo: ${PROFILE_SHORT[hq.profile]}${providerStat(hq)}` : '',
   });
   const showCursor = cursor.visible && !focused;
 
@@ -1065,6 +1073,7 @@ export function Office({ height }: { height: number }) {
               {' '}
               {nAgents(agents.length)} {g.sep} {working} trabajando {g.sep} <Text color={PERM_COLOR[hq.permMode]}>{permText(hq.permMode)}</Text> {g.sep} Consumo:{' '}
               {PROFILE_SHORT[hq.profile]}
+              {providerStat(hq)}
             </Text>
           </Box>
           {head.legend && (

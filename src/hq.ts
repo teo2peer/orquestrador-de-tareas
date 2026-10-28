@@ -4,8 +4,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { APP_ROOT, HOOK_SCRIPT, MCP_SCRIPT, ORQ_HOME, PROJECT_DIR } from './paths.ts';
 import { ORQ_DATA_DENIED, denyRules, orqDataAccess } from './orq-guard.ts';
-import { buildResumeSummary } from './resume.ts';
+import { SUMMARY_KINDS, buildResumeSummary, cacheWarm } from './resume.ts';
 import { loadDepartments } from './library.ts';
+import { claudeProviderEnv, opencodeConfig, opencodeLaunch, providerOf, runnerLaunch } from './providers.ts';
+import type { RunnerConfig } from './runner-core.ts';
 import { contextTokens, lastRequest } from './tokens.ts';
 import { usageFile } from './usage.ts';
 import { RunStore, newRunId } from './store.ts';
@@ -172,11 +174,14 @@ export type HQOptions = {
   mode?: TeamMode;
   /** Token-saving profile (default 'max': current behaviour). Restored from `resume`. */
   profile?: CostProfile;
+  /** Provider id forcing every agent of the session onto it (absent: each role's own). Restored from `resume`. */
+  provider?: string;
   cwd?: string;
   /** Previous run to continue: reattach live sessions, relaunch dead ones (see resumeMode). */
   resume?: RunMeta;
   /** How dead agents of `resume` come back (default 'full'). Agents without a transcript always resume light. */
-  resumeMode?: ResumeMode;
+  /** 'auto': per agent, full where its prompt cache is still warm, light where it went cold. */
+  resumeMode?: ResumeMode | 'auto';
   /** Directories outside the cwd every agent works with (the launched team's `dirs`). */
   dirs?: string[];
   /** Department launched (its rules go into every agent's prompt; re-read from the library on resume). */
@@ -214,6 +219,8 @@ export class HQ extends EventEmitter {
   permMode: PermMode;
   mode: TeamMode;
   profile: CostProfile;
+  /** Session-wide provider override (see providers.ts); undefined: each role's own. */
+  provider?: string;
   /** Directories outside the cwd every agent gets (--add-dir), resolved. */
   readonly dirs: string[];
   /** Department the run was launched as, and its rules (appended to every role prompt). */
@@ -244,6 +251,7 @@ export class HQ extends EventEmitter {
     this.lead = opts.resume?.lead ?? opts.lead;
     this.mode = opts.resume?.mode ?? opts.mode ?? 'role';
     this.profile = opts.resume?.profile ?? opts.profile ?? 'max';
+    this.provider = opts.resume?.provider ?? opts.provider ?? undefined;
     this.dirs = resolveDirs(opts.resume?.dirs ?? opts.dirs);
     this.dept = opts.resume?.dept ?? opts.dept;
     this.rules = opts.rules ?? (this.dept ? loadDepartments().find((d) => d.id === this.dept)?.rules : undefined);
@@ -362,7 +370,7 @@ export class HQ extends EventEmitter {
       }
       tmux.killSession(a.tmux);
       // `--resume` needs an existing transcript; without one the agent always resumes light.
-      if (mode === 'full' && a.transcriptPath && fs.existsSync(a.transcriptPath)) {
+      if ((mode === 'full' || (mode === 'auto' && cacheWarm(a.transcriptPath))) && a.transcriptPath && fs.existsSync(a.transcriptPath)) {
         // The conversation reloads up to its last saved turn: what came in during a turn that never
         // finished goes again, before what was never delivered.
         const cut = new Set(sinceStop.get(a.id) ?? []);
@@ -448,6 +456,7 @@ export class HQ extends EventEmitter {
       permMode: this.permMode,
       mode: this.mode,
       profile: this.profile,
+      ...(this.provider ? { provider: this.provider } : {}),
       lead: this.lead,
       ...(this.dirs.length ? { dirs: this.dirs } : {}),
       ...(this.dept ? { dept: this.dept } : {}),
@@ -615,6 +624,11 @@ export class HQ extends EventEmitter {
     return [...new Set([...base, ...lead, ...(role.tools ?? ROLE_TOOL_DEFAULTS[role.id] ?? [])])];
   }
 
+  /** Provider of a role in this session: the session override, else the role's own. */
+  providerFor(role: Role) {
+    return providerOf({ provider: this.provider ?? role.provider });
+  }
+
   /** Model an agent of this role runs with: the role's own, or the profile's cheaper one for read-only verifiers. */
   effectiveModel(role: Role): string | undefined {
     if (role.model) return role.model;
@@ -627,6 +641,7 @@ export class HQ extends EventEmitter {
   private writeLaunchFiles(agent: Agent, resume = false) {
     const role = agent.role;
     const dir = this.store.agentDir(agent.id);
+    const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
     // The statusLine of orq sessions is set by orq (statusline.ts → usage.ts); it writes where the UI reads.
     const env = { ORQ_SOCKET: this.socketPath, ORQ_AGENT_ID: agent.id, ORQ_USAGE_FILE: usageFile() };
     fs.writeFileSync(path.join(dir, 'system.md'), this.systemPrompt(role));
@@ -637,6 +652,38 @@ export class HQ extends EventEmitter {
     // Runs before private configs wrote it next to the logs: never leave secrets there.
     fs.rmSync(path.join(dir, 'mcp.json'), { force: true });
     const mcpConfig = this.writePrivate(agent.id, 'mcp.json', JSON.stringify({ mcpServers: { ...extra, company: { command: process.execPath, args: [MCP_SCRIPT], env } } }, null, 2));
+    const provider = this.providerFor(role);
+    if (provider.kind === 'openai') {
+      agent.model = role.model && !/^(opus|sonnet|haiku|fable)$/i.test(role.model) ? role.model : provider.model;
+      const cfg: RunnerConfig = {
+        baseUrl: provider.baseUrl ?? '',
+        keyEnv: provider.keyEnv ?? 'OPENAI_API_KEY',
+        model: agent.model ?? '',
+        system: path.join(dir, 'system.md'),
+        cwd: this.cwd,
+        writes: role.writes,
+        sessionId: agent.sessionId,
+        mcp: { command: process.execPath, args: [MCP_SCRIPT], env },
+      };
+      const cfgFile = this.writePrivate(agent.id, 'runner.json', JSON.stringify(cfg, null, 2));
+      const script = path.join(dir, 'launch.sh');
+      fs.writeFileSync(script, ['#!/bin/bash', ...Object.entries(env).map(([k, v]) => `export ${k}=${q(v)}`), `export ORQ_BUN=${q(process.execPath)}`, ...runnerLaunch(provider, cfgFile, this.cwd), ''].join('\n'), { mode: 0o755 });
+      return script;
+    }
+    if (provider.kind === 'opencode') {
+      // No hooks/settings.json: the plugin in the opencode config reports to HQ. Resumes reuse the session id it reported.
+      // Claude aliases (opus/sonnet/haiku) mean nothing to opencode: it needs provider/model.
+      agent.model = role.model?.includes('/') ? role.model : provider.model;
+      const cfg = opencodeConfig({ system: path.join(dir, 'system.md'), model: agent.model, writes: role.writes, env });
+      const cfgFile = this.writePrivate(agent.id, 'opencode.json', JSON.stringify(cfg, null, 2));
+      const script = path.join(dir, 'launch.sh');
+      fs.writeFileSync(
+        script,
+        ['#!/bin/bash', ...Object.entries(env).map(([k, v]) => `export ${k}=${q(v)}`), ...opencodeLaunch(cfgFile, this.cwd, resume ? agent.sessionId : undefined), ''].join('\n'),
+        { mode: 0o755 },
+      );
+      return script;
+    }
     const hookCmd = `"${process.execPath}" "${HOOK_SCRIPT}"`;
     const hooks = Object.fromEntries(
       HOOK_EVENTS.map((e) => [e, [{ matcher: '*', hooks: [{ type: 'command', command: hookCmd, timeout: 10 }] }]]),
@@ -647,7 +694,6 @@ export class HQ extends EventEmitter {
     const permissions = { deny: denyRules(this.cwd, ORQ_HOME) };
     fs.writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({ hooks, statusLine, permissions }, null, 2));
 
-    const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
     const args = [
       resume ? `--resume ${agent.sessionId}` : `--session-id ${agent.sessionId}`,
       `--name ${q(`orq · ${role.title}`)}`,
@@ -674,6 +720,7 @@ export class HQ extends EventEmitter {
         '#!/bin/bash',
         ...Object.entries(env).map(([k, v]) => `export ${k}=${q(v)}`),
         ...(this.profile !== 'max' ? ['export CLAUDE_CODE_DISABLE_AUTO_MEMORY=1'] : []),
+        ...claudeProviderEnv(provider),
         `export CLAUDE_CODE_AUTO_COMPACT_WINDOW=${AUTO_COMPACT_WINDOW}`,
         `export CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=${AUTO_COMPACT_PCT}`,
         `cd ${q(this.cwd)}`,
@@ -712,6 +759,8 @@ ${team}
   user reads, not to the recipient. Messages longer than ${MAX_DELIVERED} characters are cut for the recipient.
 - To keep a record (decisions, progress, findings), call \`log\` instead of writing log files by hand;
   with \`file\` it appends to a project file (e.g. a changelog or bug list) without you reading it first.
+- To keep a fact across a /clear or resume (a decision, a path, a constraint) call \`memory\` with \`save\`; to
+  recall past messages or notes call it with \`search\` instead of asking again or re-reading.
 - NEVER read, search or edit anything inside \`.orq/\` or \`~/.orq/\`: it is orq's private run data
   (logs, events, transcripts, configs). It is blocked, and the company tools tell you everything you need.
 - Do not reply to informational messages or send acknowledgements; reply only to task/question/answer messages that need action.${this.omittedMcpLine(role)}${this.toolsLine(role)}
@@ -1198,7 +1247,7 @@ ${
 
   /** claude is running a turn (its status line offers "esc to interrupt"). */
   private claudeWorking(a: Agent) {
-    return /esc to interrupt/i.test(this.paneText(a).split('\n').slice(-12).join('\n'));
+    return /esc (to )?interrupt/i.test(this.paneText(a).split('\n').slice(-12).join('\n'));
   }
 
   answerNotice(id: string, accept: boolean, roles: Role[]) {
@@ -1251,18 +1300,27 @@ ${
     );
   }
 
+  /** Whether `/clear` and `/compact` mean something in this agent's terminal (Claude Code and orq's own runner; not opencode). */
+  private hasContextCommands(a: Agent) {
+    return this.providerFor(a.role).kind !== 'opencode';
+  }
+
   private housekeep(a: Agent) {
-    if (this.profile === 'max' || this.agents.get(a.id) !== a || !this.betweenTasks(a)) return;
+    if (!this.hasContextCommands(a) || this.profile === 'max' || this.agents.get(a.id) !== a || !this.betweenTasks(a)) return;
     // Only compaction above the profile threshold. Clearing is manual (hq.clear): an automatic /clear
     // after each task rewrote the ~45k cached prefix and cost more than it saved (qa measurement).
     const limit = COMPACT_AT[this.profile];
-    if (limit && !a.compactFailed && (a.ctxTokens ?? 0) > limit) this.compactSession(a);
+    if (!limit || (a.ctxTokens ?? 0) <= limit) return;
+    // A 'saver' reader restarts from orq's summary + `memory` notes: /compact would pay for a model
+    // call over the whole context, /clear only rewrites the small primer (writers and the lead keep theirs).
+    if (this.profile === 'saver' && !a.role.writes && a.id !== this.lead && !a.clearFailed) this.clearSession(a, `Contexto reiniciado con resumen de orq (${kTokens(a.ctxTokens ?? 0)})`);
+    else if (!a.compactFailed) this.compactSession(a);
   }
 
   /** UI button: clear an idle agent's context (keeps its role and protocol). */
   clear(id: string): boolean {
     const a = this.agents.get(id);
-    if (!a || a.status !== 'idle') return false;
+    if (!a || a.status !== 'idle' || !this.hasContextCommands(a)) return false;
     this.clearSession(a, 'Contexto limpiado');
     return true;
   }
@@ -1270,7 +1328,7 @@ ${
   /** UI button: compact an idle agent's context. */
   compact(id: string): boolean {
     const a = this.agents.get(id);
-    if (!a || a.status !== 'idle') return false;
+    if (!a || a.status !== 'idle' || !this.hasContextCommands(a)) return false;
     this.compactSession(a);
     return true;
   }
@@ -1298,7 +1356,7 @@ ${
     a.ctxTokens = 0;
     // The new session starts from the light-resume summary of this agent; what waits in its inbox
     // follows in full, so it is left out of the summary.
-    a.primer = buildResumeSummary(a.id, this.store.readEvents(), this.currentMeta(), new Set(a.inbox.map((m) => m.id)));
+    a.primer = buildResumeSummary(a.id, this.store.readEvents(SUMMARY_KINDS), this.currentMeta(), new Set(a.inbox.map((m) => m.id)));
     // Busy until claude restarts the session (SessionStart, source "clear").
     a.status = 'working';
     this.runCommand(a, '/clear');
@@ -1393,6 +1451,8 @@ ${
       this.saveMeta();
     }
     const ev = p.hook_event_name as string;
+    // Agents that are not Claude Code (runner.ts) report their own context size.
+    if (typeof p.context_tokens === 'number') a.ctxTokens = p.context_tokens;
     let out: Record<string, unknown> = {};
     const withBoard = (event: string) => {
       const board = this.isCoordinator(id) ? this.boardFor(id, event === 'SessionStart') : undefined;
@@ -1402,7 +1462,7 @@ ${
       case 'SessionStart':
         this.commandDone(id);
         // After a compaction the old size is stale until the next turn reports it.
-        if (p.source === 'compact' || a.compactedFrom !== undefined) a.ctxTokens = undefined;
+        if ((p.source === 'compact' || a.compactedFrom !== undefined) && typeof p.context_tokens !== 'number') a.ctxTokens = undefined;
         a.status = 'idle';
         this.saveMeta();
         setTimeout(() => this.deliver(a), this.sessionStartDeliverMs);
@@ -1627,6 +1687,21 @@ ${
         this.track(a, 'status', a.task);
         this.changed();
         return 'ok';
+      case 'memory': {
+        // Notes and search live in the project's SQLite index: the sanctioned way to look at the
+        // past, since agents may not read .orq/ (and replaying a transcript is what costs tokens).
+        const text = String(args.text ?? '').trim();
+        if (args.action === 'save') {
+          if (!text) throw new Error('Nothing to save: `text` is empty.');
+          this.store.event({ kind: 'note', agent: id, text: short(text, 1000) });
+          return 'saved; it comes back in your summary after a /clear or resume';
+        }
+        if (!text) throw new Error('Nothing to search: `text` is empty.');
+        const hits = this.store.search(text, { allRuns: args.scope === 'project', limit: Math.min(Number(args.limit) || 6, 15) });
+        if (!hits.length) return 'No matches.';
+        const out = hits.map((h) => `- ${new Date(h.ts).toLocaleString('es-ES', { hour12: false })} ${h.agent} [${h.kind}]${h.run !== this.runId ? ` run ${h.run}` : ''}: ${short(h.text, 300)}`).join('\n');
+        return out.length > 2000 ? out.slice(0, 1999) + '…' : out;
+      }
       case 'inbox':
         return a.inbox.length || a.primer ? this.takeInbox(a) : 'No pending messages.';
       case 'ask_user': {

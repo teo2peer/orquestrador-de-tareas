@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { RunDb } from './db.ts';
 import { ORQ_HOME } from './paths.ts';
 
 export const INDEX_DIR = path.join(ORQ_HOME, 'index');
@@ -10,10 +11,68 @@ const time = (ts = Date.now()) => new Date(ts).toLocaleString('es-ES', { hour12:
  * Run persistence under <cwd>/.orq/runs/<runId>/:
  *   run.json        run metadata + agents (session ids, transcripts)
  *   events.jsonl    every event in order (source of truth)
+ *   ../orq.db       SQLite index of the events of every run of the project (see db.ts)
  *   agents/<id>.md  human-readable log per agent (prompts in/out, messages, summaries)
  *   REPORT.md       task reports (summaries) of the whole run
  *   LOG.md          long details agents log with the `log` tool (for the user; agents never read it)
  */
+const dbs = new Map<string, RunDb>();
+
+/** The project's SQLite index, given a run dir (<cwd>/.orq/runs/<runId>); null if it cannot be opened. */
+function dbFor(runDir: string): RunDb | null {
+  const file = path.join(path.dirname(runDir), 'orq.db');
+  try {
+    let db = dbs.get(file);
+    if (!db) dbs.set(file, (db = new RunDb(file)));
+    return db;
+  } catch {
+    return null;
+  }
+}
+
+function parseLines(file: string): Record<string, any>[] {
+  if (!fs.existsSync(file)) return [];
+  return fs
+    .readFileSync(file, 'utf8')
+    .split('\n')
+    .filter(Boolean)
+    .flatMap((l) => {
+      try {
+        return [JSON.parse(l)];
+      } catch {
+        return [];
+      }
+    });
+}
+
+/**
+ * Events of a run, optionally only some kinds. Read from the SQLite index; a run that only has
+ * events.jsonl (older, or the DB was lost) is imported first. Falls back to the jsonl on DB errors.
+ */
+export function readRunEvents(runDir: string, runId: string, kinds?: readonly string[]): Record<string, any>[] {
+  const jsonl = path.join(runDir, 'events.jsonl');
+  const filter = (all: Record<string, any>[]) => (kinds?.length ? all.filter((e) => kinds.includes(e.kind)) : all);
+  try {
+    const db = dbFor(runDir);
+    if (!db) return filter(parseLines(jsonl));
+    if (!db.count(runId) && fs.existsSync(jsonl)) db.import(runId, parseLines(jsonl));
+    return db.events(runId, kinds);
+  } catch {
+    return filter(parseLines(jsonl));
+  }
+}
+
+/** Search the messages and notes of every run of a project (the DB at <cwd>/.orq/runs/orq.db); [] when it has none. */
+export function searchProject(cwd: string, query: string, limit = 10) {
+  const file = path.join(cwd, '.orq', 'runs', 'orq.db');
+  if (!fs.existsSync(file)) return [];
+  try {
+    return dbFor(path.join(cwd, '.orq', 'runs', '_'))?.search(query, { limit }) ?? [];
+  } catch {
+    return [];
+  }
+}
+
 export class RunStore {
   readonly dir: string;
 
@@ -32,7 +91,18 @@ export class RunStore {
   }
 
   event(e: Record<string, unknown>) {
-    fs.appendFileSync(path.join(this.dir, 'events.jsonl'), JSON.stringify({ ts: Date.now(), ...e }) + '\n');
+    const row = { ts: Date.now(), ...e };
+    fs.appendFileSync(path.join(this.dir, 'events.jsonl'), JSON.stringify(row) + '\n');
+    try {
+      dbFor(this.dir)?.insert(this.runId, row);
+    } catch {
+      // The jsonl is the source of truth: a failing index must not break the run.
+    }
+  }
+
+  /** Full-text search over the project's messages and notes (this run, or every run). */
+  search(query: string, opts: { allRuns?: boolean; kinds?: readonly string[]; limit?: number } = {}) {
+    return dbFor(this.dir)?.search(query, { run: opts.allRuns ? undefined : this.runId, kinds: opts.kinds, limit: opts.limit }) ?? [];
   }
 
   agentLog(id: string, heading: string, text: string) {
@@ -58,21 +128,9 @@ export class RunStore {
     fs.writeFileSync(path.join(INDEX_DIR, `${meta.runId}.json`), JSON.stringify({ ...meta, agents: undefined, dir: this.dir }, null, 2));
   }
 
-  /** Events of a previous run, for replaying history on resume. */
-  readEvents(): Record<string, any>[] {
-    const file = path.join(this.dir, 'events.jsonl');
-    if (!fs.existsSync(file)) return [];
-    return fs
-      .readFileSync(file, 'utf8')
-      .split('\n')
-      .filter(Boolean)
-      .flatMap((l) => {
-        try {
-          return [JSON.parse(l)];
-        } catch {
-          return [];
-        }
-      });
+  /** Events of a previous run (optionally only some kinds), for replaying history on resume. */
+  readEvents(kinds?: readonly string[]): Record<string, any>[] {
+    return readRunEvents(this.dir, this.runId, kinds);
   }
 }
 

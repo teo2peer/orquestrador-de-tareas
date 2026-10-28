@@ -6,6 +6,11 @@ const dots = (s: string) => s.replaceAll('·', g.sep);
 const line = (...args: Parameters<typeof footerParts>) => footerText(footerParts(...args));
 
 describe('keyNames', () => {
+  test('macOS Option+letter without Meta answers to its Alt shortcut', () => {
+    expect(keyNames('ß', {}, false)).toEqual(['alt+s', 'ß']);
+    expect(keyNames('å', {})).toEqual(['alt+a', 'å']);
+    expect(keyNames('®', {})).toEqual(['alt+r', '®']);
+  });
   test('arrows, enter, esc, shift+tab, delete', () => {
     expect(keyNames('', { upArrow: true })).toEqual(['up']);
     expect(keyNames('\r', { return: true })).toEqual(['enter']);
@@ -37,7 +42,7 @@ test('accessKey reads the bracketed letter', () => {
 describe('footer', () => {
   test('matches the approved copy', () => {
     expect(line('teams.grid', 'nav', { width: 120 })).toBe(dots('[NAVEGAR] ←↑↓→ mover · ↵ detalle · l lanzar · n nuevo · e editar · ? ayuda'));
-    expect(line('mouse', 'nav', { width: 120 })).toBe(dots('[NAVEGAR] clic y rueda · flechas: teclado · 1-6 pestañas · q salir · ? ayuda'));
+    expect(line('mouse', 'nav', { width: 120 })).toBe(dots('[NAVEGAR] clic y rueda · ⌥S copiar texto · 1-6 pestañas · q salir · ? ayuda'));
     expect(line('terminal', 'terminal', { width: 120, exitLabel: 'Ctrl+]' })).toBe(dots('[TERMINAL] lo que escribes va al agente · Ctrl+] salir'));
     expect(line('confirm', 'modal', { width: 120 })).toBe(dots('[CONFIRMAR] letra entre [ ] · ←→ ↵ elegir · Esc cancelar'));
     expect(line('confirm.launch', 'modal', { width: 120 })).toBe(dots('[CONFIRMAR] ←→ elegir · ↵ pulsar · Esc cancelar'));

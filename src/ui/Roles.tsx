@@ -306,6 +306,8 @@ function RoleDetail({
   const promptLines = wrap(role.prompt || '(sin prompt)', inner - 1);
   const scroll = useScroll(promptLines.length, promptH);
   const picked = selection.has(role.id);
+  // Four buttons plus margins need ~64 columns; below that the labels shorten so «Borrar» is never cut.
+  const tight = inner < 64;
   const perms = role.writes ? '(puede editar ficheros)' : '(no puede editar ficheros)';
 
   return (
@@ -380,9 +382,9 @@ function RoleDetail({
       {!showPrompt && <Box flexGrow={1} />}
       <LaunchButtons mode={perm} onModeChange={setPerm} profile={profile} onProfileChange={setProfile} provider={provider} onProviderChange={setProvider} onConfirmingChange={setConfirming} collapsed={!optsOpen} onToggleOptions={toggleOpts} short count={1} running={!!hq} onLaunch={(mode) => launch([role.id], role.id, mode)} />
       <Box flexDirection="row" flexShrink={0} height={1}>
-        <Button variant="secondary" label={picked ? '− Quitar de la selección' : `${g.add} Añadir a la selección`} onClick={() => toggleSelection(role.id)} />
+        <Button variant="secondary" label={picked ? (tight ? '− Selección' : '− Quitar de la selección') : tight ? `${g.add} Selección` : `${g.add} Añadir a la selección`} onClick={() => toggleSelection(role.id)} />
         <Button variant="secondary" label={`${g.edit} Editar`} onClick={onEdit} />
-        <Button variant="secondary" label={`${g.copy} Duplicar`} onClick={onCopy} />
+        <Button variant="secondary" label={`${g.copy} ${tight ? 'Copiar' : 'Duplicar'}`} onClick={onCopy} />
         <Box flexGrow={1} />
         <Button variant="danger" label={`${g.close} Borrar`} onClick={onDelete} />
       </Box>

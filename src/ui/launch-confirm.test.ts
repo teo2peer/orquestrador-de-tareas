@@ -57,3 +57,34 @@ describe('<LaunchButtons> with Auto + YOLO opcional', () => {
     inst.unmount();
   });
 });
+
+describe('<LaunchButtons> collapsed', () => {
+  const draw = async (props: Record<string, unknown>) => {
+    const stdin = Object.assign(new PassThrough(), { isTTY: true, setRawMode: () => {}, ref: () => {}, unref: () => {} });
+    const stdout = Object.assign(new PassThrough(), { isTTY: true, columns: 80, rows: 24 });
+    let out = '';
+    stdout.on('data', (d) => (out += String(d)));
+    const inst = render(React.createElement(MouseProvider, { children: React.createElement(LaunchButtons, { count: 2, running: false, onLaunch: () => {}, ...props } as never) }), {
+      stdin: stdin as never,
+      stdout: stdout as never,
+      stderr: stdout as never,
+      exitOnCtrlC: false,
+      patchConsole: false,
+      debug: true,
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    inst.unmount();
+    return out.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '');
+  };
+  test('shows a one-line summary and hides the toggles', async () => {
+    const s = await draw({ collapsed: true, onToggleOptions: () => {}, profile: 'max', onProfileChange: () => {}, provider: '', onProviderChange: () => {} });
+    expect(s).toContain('Auto');
+    expect(s).toContain('Opciones');
+    expect(s).toContain('Lanzar 2 agentes');
+    expect(s).not.toContain('Consumo:');
+  });
+  test('a risky mode stays visible in the summary', async () => {
+    const s = await draw({ collapsed: true, mode: 'yolo', onToggleOptions: () => {}, profile: 'max', onProfileChange: () => {} });
+    expect(s).toContain(`${g.warning} YOLO`);
+  });
+});

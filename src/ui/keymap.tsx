@@ -691,6 +691,7 @@ export const HELP: HelpSection[] = [
       ['x', 'Limpiar la selección'],
       ['/', 'Buscar rol'],
       ['[ ]', 'Pack anterior / siguiente'],
+      ['p', 'Plegar / desplegar el prompt del rol abierto'],
       ['i', 'Importar roles'],
       ['n', 'Nuevo rol'],
       ['e', 'Editar'],

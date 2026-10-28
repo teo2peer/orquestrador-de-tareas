@@ -96,6 +96,11 @@ describe('launchButtonsHeight', () => {
   test('inline is one row', () => expect(launchButtonsHeight({ inline: true, confirming: true })).toBe(1));
   test('launch: counter + toggle + button + help', () => expect(launchButtonsHeight()).toBe(4));
   test('launch confirming: room for question, 2 consequences and buttons', () => expect(launchButtonsHeight({ confirming: true })).toBe(6));
+  test('collapsed: summary row + button, 5 rows while confirming', () => {
+    expect(launchButtonsHeight({ profile: true, collapsed: true })).toBe(2);
+    expect(launchButtonsHeight({ profile: true, collapsed: true, confirming: true })).toBe(5);
+  });
+  test('collapsed does not change an open session', () => expect(launchButtonsHeight({ running: true, collapsed: true })).toBe(1));
   test('session open: one button, 3 rows while confirming', () => {
     expect(launchButtonsHeight({ running: true })).toBe(1);
     expect(launchButtonsHeight({ running: true, confirming: true })).toBe(3);

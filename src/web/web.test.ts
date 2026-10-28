@@ -1,5 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 import { EventEmitter } from 'node:events';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import type { HQ, HQOptions } from '../hq.ts';
 import { Session, teamOf } from '../session.ts';
 import type { Department, Role } from '../types.ts';
@@ -68,6 +71,7 @@ describe('Session', () => {
     expect(made[0]!.opts.permMode).toBe('yolo');
     const again = s.launch({ roleIds: ['dev', 'qa'], perm: 'auto', profile: 'max' });
     expect(again.ok && again.message).toBe('1 agente añadido a la sesión');
+    expect(s.launch({ roleIds: ['dev'], perm: 'auto', profile: 'max' })).toEqual({ ok: true, message: 'Esos agentes ya están en la sesión' });
     expect(made).toHaveLength(1);
     expect([...made[0]!.agents.keys()]).toEqual(['cto', 'dev', 'qa']);
   });
@@ -103,6 +107,24 @@ describe('snapshot', () => {
     expect(snap.run.agents.map((a: any) => a.id)).toEqual(['cto']);
     expect(snap.run.profile).toBe('balanced');
     expect(snap.run.alerts).toEqual([]);
+  });
+});
+
+describe('role actions', () => {
+  test('create, edit (keeping hidden fields) and delete a role in the isolated library', async () => {
+    const { perform } = await import('./server.ts');
+    const { loadRoles } = await import('../library.ts');
+    const { s } = session([]);
+    expect((await perform(s, { type: 'saveRole', name: ' ' })).ok).toBe(false);
+    const made = await perform(s, { type: 'saveRole', name: 'Web Tester', title: 'QA web', description: 'd', prompt: 'Haz pruebas', color: 'green', writes: false, scope: 'global' });
+    expect(made.ok).toBe(true);
+    const r = loadRoles().find((x) => x.id === 'web-tester')!;
+    expect(r).toMatchObject({ title: 'QA web', writes: false, color: 'green', prompt: 'Haz pruebas' });
+    expect((await perform(s, { type: 'saveRole', name: 'Web Tester' })).ok).toBe(false);
+    await perform(s, { type: 'saveRole', id: 'web-tester', name: 'Web Tester', title: 'QA', prompt: 'Otro', writes: true, scope: 'global' });
+    expect(loadRoles().find((x) => x.id === 'web-tester')).toMatchObject({ title: 'QA', prompt: 'Otro', writes: true });
+    expect((await perform(s, { type: 'deleteRole', id: 'web-tester' })).ok).toBe(true);
+    expect(loadRoles().some((x) => x.id === 'web-tester')).toBe(false);
   });
 });
 
@@ -167,6 +189,117 @@ describe('web server', () => {
       await reader.cancel();
     } finally {
       web.stop();
+    }
+  });
+});
+
+describe('auto teams', () => {
+  const fixture = () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orq-web-auto-'));
+    for (const [f, body] of [['package.json', '{"name":"x","dependencies":{"react":"1"}}'], ['src/a.ts', 'a'], ['src/ui/b.tsx', 'b'], ['docs/c.md', 'c']] as const) {
+      fs.mkdirSync(path.dirname(path.join(dir, f)), { recursive: true });
+      fs.writeFileSync(path.join(dir, f), body);
+    }
+    return dir;
+  };
+
+  test('area plan: items, leaving one out, and a running session blocks it', async () => {
+    const { planAuto } = await import('./auto.ts');
+    const dir = fixture();
+    try {
+      const lib = [role('cto'), role('frontend', { writes: true })];
+      const plan = planAuto('area', dir, lib);
+      expect(plan.items.length).toBeGreaterThan(0);
+      expect(plan.team[0]!.writes).toBe(false);
+      expect(plan.team).toHaveLength(plan.items.length + 1);
+      const off = planAuto('area', dir, lib, { off: [plan.items[0]!.id] });
+      expect(off.team).toHaveLength(plan.team.length - 1);
+      expect(planAuto('area', dir, lib, { running: true }).blocked).toBe('Detén la sesión para componer por partes');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('role plan: honours off and lead', async () => {
+    const { planAuto } = await import('./auto.ts');
+    const dir = fixture();
+    try {
+      const lib = [role('cto'), role('pm'), role('frontend', { writes: true }), role('backend', { writes: true }), role('qa')];
+      const plan = planAuto('role', dir, lib);
+      expect(plan.team.length).toBeGreaterThan(0);
+      const other = plan.items.find((i) => !i.lead)!;
+      const t = planAuto('role', dir, lib, { off: [other.id], lead: plan.items.find((i) => i.id !== plan.lead)?.id });
+      expect(t.team.some((r) => r.id === other.id)).toBe(false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('Session.launchTeam: new run, add roles, refuse areas on an open run', () => {
+    const { s, made } = session([]);
+    const team = [role('cto'), role('area-x')];
+    expect(s.launchTeam({ team: [], lead: 'cto', mode: 'role', perm: 'auto', profile: 'max' }).ok).toBe(false);
+    expect(s.launchTeam({ team, lead: 'area-x', mode: 'area', perm: 'auto', profile: 'max' }).ok).toBe(true);
+    expect(made[0]!.opts.roles.map((r) => r.id)).toEqual(['area-x', 'cto']);
+    expect(made[0]!.opts.mode).toBe('area');
+    expect(s.launchTeam({ team, lead: 'cto', mode: 'area', perm: 'auto', profile: 'max' })).toEqual({ ok: false, error: 'Detén la sesión para componer por partes' });
+    expect(s.launchTeam({ team: [...team, role('qa')], lead: 'cto', mode: 'role', perm: 'auto', profile: 'max' })).toEqual({ ok: true, message: '1 agente añadido a la sesión' });
+  });
+});
+
+describe('terminals', () => {
+  test('parseAnsi: colours, 256/truecolor, reset, inverse and stray escapes', async () => {
+    const { parseAnsi } = await import('./ansi.ts');
+    expect(parseAnsi('plain')).toEqual([{ text: 'plain', style: undefined }]);
+    const r = parseAnsi('\x1b[1;31mred\x1b[0m ok\x1b[38;5;196m!\x1b[38;2;1;2;3mx\x1b[7mi\x1b[?25l\x1b]0;title\x07');
+    expect(r[0]).toEqual({ text: 'red', style: { color: '#cd3131', fontWeight: '700' } });
+    expect(r[1]).toEqual({ text: ' ok', style: undefined });
+    expect(r[2]!.style).toEqual({ color: 'rgb(255,0,0)' });
+    expect(r[3]!.style).toEqual({ color: 'rgb(1,2,3)' });
+    expect(r[4]!.style).toMatchObject({ backgroundColor: 'rgb(1,2,3)' });
+    expect(r.map((x) => x.text).join('')).toBe('red ok!xi');
+  });
+
+  test('only agent windows of the open run are reachable, and only known keys are sent', async () => {
+    const { perform, termTarget } = await import('./server.ts');
+    const { s } = session([role('cto')]);
+    expect(termTarget(s, 'cto', 'claude')).toBeNull();
+    s.launch({ roleIds: ['cto'], perm: 'auto', profile: 'max' });
+    (s.hq as any).agents.get('cto').tmux = 'orq-20990101-000000-cto';
+    expect(termTarget(s, 'cto', 'claude')).toBe('orq-20990101-000000-cto:claude');
+    expect(termTarget(s, 'cto', 'shell')).toBe('orq-20990101-000000-cto:shell');
+    expect(termTarget(s, 'cto', 'other')).toBeNull();
+    expect(termTarget(s, 'nobody', 'claude')).toBeNull();
+    expect(await perform(s, { type: 'termKeys', id: 'x', win: 'claude', text: 'hi' })).toEqual({ ok: false, error: 'Ese terminal no está disponible' });
+  });
+});
+
+describe('terminal endpoints with a real (private) tmux', () => {
+  test('reads a pane and types into it through the API', async () => {
+    const tmux = await import('../tmux.ts');
+    if (!Bun.which('tmux')) return;
+    const runId = '20990101-000009';
+    tmux.registerRun(runId);
+    const name = `orq-${runId}-cto`;
+    tmux.newSession(name, os.tmpdir(), 'sh');
+    const { s } = session([role('cto')]);
+    s.launch({ roleIds: ['cto'], perm: 'auto', profile: 'max' });
+    (s.hq as any).agents.get('cto').tmux = name;
+    const web = await startWeb({ session: s, port: 0 });
+    const get = async (q: string) => (await fetch(`${web.url}/api/term?${q}`, { headers: { 'x-orq-token': web.token } })).json() as Promise<any>;
+    const act = (b: object) => fetch(`${web.url}/api/action`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-orq-token': web.token }, body: JSON.stringify(b) }).then((r) => r.json());
+    try {
+      expect(await act({ type: 'termKeys', id: 'cto', win: 'claude', text: 'echo web-term-ok', keys: ['Enter', 'rm -rf', 'C-c'] })).toEqual({ ok: true, message: '' });
+      let text = '';
+      for (let i = 0; i < 20 && !text.includes('web-term-ok\n'); i++) {
+        await Bun.sleep(100);
+        text = ((await get('id=cto&win=claude')).lines as string[]).join('\n');
+      }
+      expect(text).toMatch(/^web-term-ok$/m);
+      expect((await get('id=nobody&win=claude')).error).toBe('Terminal no disponible');
+    } finally {
+      web.stop();
+      tmux.killSession(name);
     }
   });
 });

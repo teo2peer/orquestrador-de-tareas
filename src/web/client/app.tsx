@@ -1,12 +1,15 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { type Run as AnsiRun, parseAnsi } from '../ansi.ts';
 import type { Snapshot } from '../snapshot.ts';
 
 type Run = NonNullable<Snapshot['run']>;
 type Agent = Run['agents'][number];
-type Tab = 'teams' | 'office' | 'messages' | 'sessions';
+type Tab = 'teams' | 'roles' | 'office' | 'terminals' | 'messages' | 'sessions';
 type Perm = 'auto' | 'auto-insecure' | 'yolo';
 type Profile = 'saver' | 'balanced' | 'max';
+type AutoPlan = Omit<import('../auto.ts').AutoPlan, 'team' | 'generated'>;
+type Compose = 'dept' | 'role' | 'area';
 type Outcome = { ok: true; message: string } | { ok: false; error: string };
 
 const TOKEN = document.querySelector<HTMLMetaElement>('meta[name=orq-token]')!.content;
@@ -27,7 +30,8 @@ function useSnapshot() {
   useEffect(() => {
     const es = new EventSource(`/api/events?token=${TOKEN}`);
     es.onmessage = (e) => (setOnline(true), setSnap(JSON.parse(e.data)));
-    es.onerror = () => setOnline(false);
+    // A restarted server issues a new token: the old page can only be reloaded.
+    es.onerror = () => (setOnline(false), es.readyState === EventSource.CLOSED && location.reload());
     return () => es.close();
   }, []);
   return { snap, online };
@@ -63,6 +67,61 @@ function Confirm({ title, lines, action, danger, onYes, onNo }: { title: string;
 
 type Tell = (o: Outcome) => void;
 
+/** «Auto por rol» / «Auto por partes del código»: the server analyses the directory, the user trims and launches. */
+function useAuto(kind: Compose, running: boolean, version: number) {
+  const [off, setOff] = useState<string[]>([]);
+  const [lead, setLead] = useState('');
+  const [save, setSave] = useState(false);
+  const [plan, setPlan] = useState<AutoPlan | null>(null);
+  const [error, setError] = useState('');
+  const [nonce, setNonce] = useState(0);
+  useEffect(() => {
+    if (kind === 'dept') return;
+    const q = new URLSearchParams({ token: TOKEN, kind, lead, save: save ? '1' : '0' });
+    for (const o of off) q.append('off', o);
+    let live = true;
+    fetch(`/api/auto?${q}`)
+      .then((r) => r.json())
+      .then((d) => live && ('error' in d ? (setError(d.error), setPlan(null)) : (setError(''), setPlan(d))))
+      .catch((e) => live && setError(String(e)));
+    return () => void (live = false);
+  }, [kind, off.join(), lead, save, running, nonce]);
+  useEffect(() => (setOff([]), setLead(''), setPlan(null), setError('')), [kind]);
+  return { plan, error, off, lead, save, setSave, setLead, reanalyse: () => (setOff([]), setLead(''), setNonce((n) => n + 1)), toggle: (id: string) => setOff((o) => (o.includes(id) ? o.filter((x) => x !== id) : [...o, id])) };
+}
+
+function AutoPreview({ kind, auto }: { kind: 'role' | 'area'; auto: ReturnType<typeof useAuto> }) {
+  const { plan, error } = auto;
+  if (error) return <p className="alert">{error}</p>;
+  if (!plan) return <p className="muted">Analizando el directorio…</p>;
+  return (
+    <>
+      {plan.stack.length > 0 && <p className="muted small">Detectado: {plan.stack.join(' · ')}</p>}
+      {plan.items.length === 0 && <p className="muted">No encontré nada que proponer en este directorio.</p>}
+      <div className="grid">
+        {plan.items.map((it) => (
+          <label key={it.id} className={`card ${it.off ? '' : 'sel'}`} style={{ cursor: 'pointer' }}>
+            <h3><input type="checkbox" checked={!it.off} onChange={() => auto.toggle(it.id)} /> <Dot color={it.color} /> {it.name} {it.lead && '★'} <span className="small muted">{it.writes ? '✎ escribe' : '👁 lee'}</span></h3>
+            {it.paths && <div className="small"><code>{it.paths.join(', ') || 'sin rutas'}</code> · {it.files} fich.</div>}
+            <div className="small muted">{it.base} — {it.reason}</div>
+          </label>
+        ))}
+      </div>
+      <fieldset>
+        <legend>Líder</legend>
+        <select value={plan.lead} onChange={(e) => auto.setLead(e.target.value)}>
+          {plan.leads.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+        </select>
+      </fieldset>
+      {plan.issues.map((i, k) => <div key={k} className="alert" style={{ borderColor: i.level === 'error' ? 'var(--danger)' : 'var(--warn)' }}>{i.text}</div>)}
+      {plan.blocked && <p className="small" style={{ color: 'var(--danger)' }}>{plan.blocked}</p>}
+      <label className="opt"><input type="checkbox" checked={auto.save} onChange={(e) => auto.setSave(e.target.checked)} /> Guardar en este proyecto (<code>.orq/</code>)</label>
+      {auto.save && plan.conflicts.map((c) => <div key={c} className="small muted">{c}</div>)}
+      <div style={{ marginTop: 6 }}><button className="btn" onClick={auto.reanalyse}>↻ Reanalizar</button></div>
+    </>
+  );
+}
+
 function Teams({ snap, tell, goOffice }: { snap: Snapshot; tell: Tell; goOffice: () => void }) {
   const [picked, setPicked] = useState<string[]>([]);
   const [lead, setLead] = useState('');
@@ -70,7 +129,11 @@ function Teams({ snap, tell, goOffice }: { snap: Snapshot; tell: Tell; goOffice:
   const [profile, setProfile] = useState<Profile>(snap.prefs.profile);
   const [provider, setProvider] = useState(snap.prefs.provider);
   const [ask, setAsk] = useState(false);
+  const [compose, setCompose] = useState<Compose>('dept');
   const running = !!snap.run;
+  const auto = useAuto(compose, running, snap.run?.version ?? 0);
+  const autoCount = auto.plan ? auto.plan.items.filter((i) => !i.off).length + (compose === 'area' ? 1 : 0) : 0;
+  const autoBlocked = compose !== 'dept' && (!auto.plan || !!auto.plan.blocked || autoCount === 0);
   const roleById = useMemo(() => new Map(snap.roles.map((r) => [r.id, r])), [snap.roles]);
   const toggle = (id: string) => setPicked((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
   const pickDept = (d: Snapshot['depts'][number]) => {
@@ -79,9 +142,10 @@ function Teams({ snap, tell, goOffice }: { snap: Snapshot; tell: Tell; goOffice:
   };
   const effLead = picked.includes(lead) ? lead : (picked[0] ?? '');
   const risky = perm !== 'auto';
+  const n = compose === 'dept' ? picked.length : autoCount;
   const go = async () => {
     setAsk(false);
-    const out = await act({ type: 'launch', roleIds: picked, lead: effLead, perm, profile, provider });
+    const out = compose === 'dept' ? await act({ type: 'launch', roleIds: picked, lead: effLead, perm, profile, provider }) : await act({ type: 'launchAuto', kind: compose, off: auto.off, lead: auto.lead, save: auto.save, perm, profile, provider });
     tell(out);
     if (out.ok) goOffice();
   };
@@ -89,7 +153,13 @@ function Teams({ snap, tell, goOffice }: { snap: Snapshot; tell: Tell; goOffice:
   return (
     <>
       <p className="muted">Directorio: <code>{snap.cwd}</code></p>
-      {categories.map((cat) => (
+      <div className="row">
+        {([['dept', 'Departamento'], ['role', 'Auto por rol'], ['area', 'Auto por partes del código']] as [Compose, string][]).map(([id, label]) => (
+          <button key={id} className={`chip ${compose === id ? 'sel' : ''}`} onClick={() => setCompose(id)}>{label}</button>
+        ))}
+      </div>
+      {compose !== 'dept' && <AutoPreview kind={compose} auto={auto} />}
+      {compose === 'dept' && categories.map((cat) => (
         <section key={cat}>
           <h2>{cat}</h2>
           <div className="grid">
@@ -106,24 +176,24 @@ function Teams({ snap, tell, goOffice }: { snap: Snapshot; tell: Tell; goOffice:
           </div>
         </section>
       ))}
-      <h2>Roles sueltos</h2>
+      {compose === 'dept' && <><h2>Roles sueltos</h2>
       <div className="row">
         {snap.roles.map((r) => (
           <button key={r.id} className={`chip ${picked.includes(r.id) ? 'sel' : ''}`} title={r.description} onClick={() => toggle(r.id)}>
             <Dot color={r.color} /> {r.name}
           </button>
         ))}
-      </div>
+      </div></>}
 
       <h2>Lanzar</h2>
-      <fieldset>
+      {compose === 'dept' && <fieldset>
         <legend>Líder</legend>
         <select value={effLead} onChange={(e) => setLead(e.target.value)} disabled={!picked.length || running}>
           {picked.map((id) => (
             <option key={id} value={id}>{roleById.get(id)?.name ?? id}</option>
           ))}
         </select>
-      </fieldset>
+      </fieldset>}
       <fieldset disabled={running}>
         <legend>Permisos</legend>
         {(Object.keys(PERM_NAME) as Perm[]).map((p) => (
@@ -145,12 +215,12 @@ function Teams({ snap, tell, goOffice }: { snap: Snapshot; tell: Tell; goOffice:
           ))}
         </select>
       </fieldset>
-      <button className="btn primary" disabled={!picked.length} onClick={() => (risky && !running ? setAsk(true) : void go())}>
-        {running ? `Añadir ${picked.length} a la sesión` : `Lanzar ${picked.length} agente${picked.length === 1 ? '' : 's'}`}
+      <button className="btn primary" disabled={compose === 'dept' ? !picked.length : autoBlocked} onClick={() => (risky && !running ? setAsk(true) : void go())}>
+        {running ? `Añadir ${n} a la sesión` : compose === 'dept' ? `Lanzar ${n} agente${n === 1 ? '' : 's'}` : `Crear y lanzar ${n} agente${n === 1 ? '' : 's'}`}
       </button>
       {ask && (
         <Confirm
-          title={`¿Lanzar ${picked.length} agente${picked.length === 1 ? '' : 's'} en modo ${PERM_NAME[perm]}?`}
+          title={`¿Lanzar ${n} agente${n === 1 ? '' : 's'} en modo ${PERM_NAME[perm]}?`}
           lines={[`Directorio: ${snap.cwd}`, perm === 'yolo' ? 'YOLO: los agentes ejecutan cualquier herramienta sin pedir permiso.' : 'Los agentes piden menos confirmaciones de lo normal.']}
           action="Lanzar"
           danger
@@ -158,6 +228,187 @@ function Teams({ snap, tell, goOffice }: { snap: Snapshot; tell: Tell; goOffice:
           onNo={() => setAsk(false)}
         />
       )}
+    </>
+  );
+}
+
+
+type RoleInfo = Snapshot['roles'][number];
+const COLOR_NAMES = ['red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white', 'orange'];
+
+function RoleForm({ snap, role, tell, done }: { snap: Snapshot; role: RoleInfo | null; tell: Tell; done: () => void }) {
+  const [f, setF] = useState({ name: role?.name ?? '', title: role?.title ?? '', description: role?.description ?? '', color: role?.color ?? 'cyan', writes: role?.writes ?? true, provider: role?.provider ?? '', model: role?.model ?? '', scope: role?.scope ?? 'global', prompt: '' });
+  const [loaded, setLoaded] = useState(!role);
+  const [ask, setAsk] = useState(false);
+  useEffect(() => {
+    if (!role) return;
+    fetch(`/api/role?id=${encodeURIComponent(role.id)}`, { headers: { 'x-orq-token': TOKEN } })
+      .then((r) => r.json())
+      .then((d: { prompt: string }) => (setF((x) => ({ ...x, prompt: d.prompt })), setLoaded(true)));
+  }, [role?.id]);
+  const set = <K extends keyof typeof f>(k: K, v: (typeof f)[K]) => setF((x) => ({ ...x, [k]: v }));
+  const save = async () => {
+    const out = await act({ type: 'saveRole', id: role?.id, ...f });
+    tell(out);
+    if (out.ok) done();
+  };
+  return (
+    <div className="card">
+      <h3>{role ? `Editar «${role.name}»` : 'Nuevo rol'}</h3>
+      <fieldset><legend>Nombre</legend><input type="text" value={f.name} onChange={(e) => set('name', e.target.value)} /></fieldset>
+      <fieldset><legend>Título</legend><input type="text" value={f.title} onChange={(e) => set('title', e.target.value)} /></fieldset>
+      <fieldset><legend>Descripción</legend><textarea rows={2} value={f.description} onChange={(e) => set('description', e.target.value)} /></fieldset>
+      <fieldset><legend>Prompt{role?.fromSource ? ' (del archivo fuente; editarlo lo reemplaza)' : ''}</legend><textarea rows={10} disabled={!loaded} value={f.prompt} onChange={(e) => set('prompt', e.target.value)} /></fieldset>
+      <div className="row">
+        <select value={f.color} onChange={(e) => set('color', e.target.value)} style={{ width: 'auto' }}>
+          {[...new Set([f.color, ...COLOR_NAMES])].map((c) => <option key={c}>{c}</option>)}
+        </select>
+        <select value={f.provider} onChange={(e) => set('provider', e.target.value)} style={{ width: 'auto' }}>
+          <option value="">Proveedor por defecto</option>
+          {snap.providers.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+        </select>
+        <input type="text" placeholder="Modelo (opcional)" value={f.model} onChange={(e) => set('model', e.target.value)} style={{ width: 160 }} />
+        <select value={f.scope} onChange={(e) => set('scope', e.target.value as 'global' | 'project')} style={{ width: 'auto' }}>
+          <option value="global">Global (~/.orq)</option>
+          <option value="project">Proyecto (.orq)</option>
+        </select>
+        <label className="opt"><input type="checkbox" checked={f.writes} onChange={(e) => set('writes', e.target.checked)} /> Escribe archivos</label>
+      </div>
+      <div className="row" style={{ marginTop: 10 }}>
+        <button className="btn primary" disabled={!loaded} onClick={save}>Guardar</button>
+        <button className="btn" onClick={done}>Cancelar</button>
+        <span className="spacer" />
+        {role && <button className="btn danger" onClick={() => setAsk(true)}>Borrar</button>}
+      </div>
+      {ask && role && <Confirm title={`¿Borrar «${role.name}»?`} lines={['Se elimina su archivo de la biblioteca.']} action="Borrar" danger onYes={async () => { setAsk(false); const out = await act({ type: 'deleteRole', id: role.id }); tell(out); if (out.ok) done(); }} onNo={() => setAsk(false)} />}
+    </div>
+  );
+}
+
+function Roles({ snap, tell }: { snap: Snapshot; tell: Tell }) {
+  const [q, setQ] = useState('');
+  const [sel, setSel] = useState<string | 'new' | null>(null);
+  const list = snap.roles.filter((r) => `${r.name} ${r.title} ${r.description} ${r.pack ?? ''}`.toLowerCase().includes(q.toLowerCase()));
+  const cur = sel && sel !== 'new' ? (snap.roles.find((r) => r.id === sel) ?? null) : null;
+  return (
+    <div className="layout">
+      <div>
+        <div className="row"><input type="text" placeholder="Filtrar roles" value={q} onChange={(e) => setQ(e.target.value)} style={{ flex: 1 }} /><button className="btn primary" onClick={() => setSel('new')}>＋ Nuevo</button></div>
+        <div className="grid" style={{ marginTop: 12 }}>
+          {list.map((r) => (
+            <button key={r.id} className={`card ${sel === r.id ? 'sel' : ''}`} onClick={() => setSel(r.id)}>
+              <h3><Dot color={r.color} /> {r.name}</h3>
+              <div className="small muted">{r.title}{r.pack ? ` · ${r.pack}` : ''} · {r.scope === 'project' ? 'proyecto' : 'global'}</div>
+              <div className="small">{r.description}</div>
+            </button>
+          ))}
+        </div>
+      </div>
+      {sel === 'new' ? <RoleForm key="new" snap={snap} role={null} tell={tell} done={() => setSel(null)} /> : cur ? <RoleForm key={cur.id} snap={snap} role={cur} tell={tell} done={() => setSel(null)} /> : <p className="muted">Elige un rol para editarlo o crea uno nuevo.</p>}
+    </div>
+  );
+}
+
+type TermData = { lines: string[]; cursor: { x: number; y: number } | null; mouse: boolean; alt: boolean; back: number };
+
+/** One row as styled spans; the cursor cell is drawn inverted. */
+function Row({ line, cursorX }: { line: string; cursorX?: number }) {
+  let runs: AnsiRun[] = parseAnsi(line);
+  if (cursorX !== undefined) {
+    const out: AnsiRun[] = [];
+    let at = 0;
+    let done = false;
+    for (const r of runs) {
+      const chars = [...r.text];
+      if (!done && cursorX < at + chars.length) {
+        const k = cursorX - at;
+        if (k > 0) out.push({ text: chars.slice(0, k).join(''), style: r.style });
+        out.push({ text: chars[k]!, style: { ...r.style, backgroundColor: '#e5e5e5', color: '#1e1e1e' } });
+        if (k + 1 < chars.length) out.push({ text: chars.slice(k + 1).join(''), style: r.style });
+        done = true;
+      } else out.push(r);
+      at += chars.length;
+    }
+    if (!done) out.push({ text: ' '.repeat(Math.max(0, cursorX - at)) + ' ', style: { backgroundColor: '#e5e5e5' } });
+    runs = out;
+  }
+  return <div>{runs.length ? runs.map((r, i) => <span key={i} style={r.style}>{r.text}</span>) : ' '}</div>;
+}
+
+/** tmux key name of a browser key event (null: not a special key; printable text goes as literal). */
+function tmuxKey(e: React.KeyboardEvent): string | null {
+  const map: Record<string, string> = { Enter: 'Enter', Escape: 'Escape', Tab: e.shiftKey ? 'BTab' : 'Tab', Backspace: 'BSpace', Delete: 'DC', ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right', Home: 'Home', End: 'End', PageUp: 'PageUp', PageDown: 'PageDown' };
+  if (map[e.key]) return map[e.key]!;
+  if (e.ctrlKey && /^[a-z]$/i.test(e.key)) return `C-${e.key.toLowerCase()}`;
+  return null;
+}
+
+function Terminals({ run, tell }: { run: Run | null; tell: Tell }) {
+  const live = run?.agents.filter((a) => a.status !== 'dormant') ?? [];
+  const [id, setId] = useState('');
+  const [win, setWin] = useState<'claude' | 'shell'>('claude');
+  const [type, setType] = useState(false);
+  const [back, setBack] = useState(0);
+  const [data, setData] = useState<TermData | null>(null);
+  const [error, setError] = useState('');
+  const cur = live.find((a) => a.id === id)?.id ?? live[0]?.id ?? '';
+  useEffect(() => setBack(0), [cur, win]);
+  useEffect(() => {
+    if (!cur) return;
+    let alive = true;
+    const poll = async () => {
+      try {
+        const r = await fetch(`/api/term?id=${encodeURIComponent(cur)}&win=${win}&back=${back}`, { headers: { 'x-orq-token': TOKEN } });
+        const d = await r.json();
+        if (!alive) return;
+        if ('error' in d) return setError(d.error);
+        setError('');
+        setData(d);
+      } catch (e) {
+        if (alive) setError(String(e));
+      }
+    };
+    void poll();
+    const t = setInterval(poll, type ? 250 : 700);
+    return () => (alive = false, clearInterval(t));
+  }, [cur, win, back, type]);
+  const [paste, setPaste] = useState('');
+  const send = (body: Record<string, unknown>) => void act({ type: 'termKeys', id: cur, win, ...body }).then((o) => !o.ok && tell(o));
+  if (!run) return <p className="muted">No hay sesión abierta.</p>;
+  if (!live.length) return <p className="muted">Todavía no hay agentes arrancados.</p>;
+  const onKey = (e: React.KeyboardEvent) => {
+    if (e.metaKey) return;
+    const k = tmuxKey(e);
+    if (k) return e.preventDefault(), send({ keys: [k] });
+    if (e.key.length === 1 && !e.ctrlKey && !e.altKey) return e.preventDefault(), send({ text: e.key });
+  };
+  const onWheel = (e: React.WheelEvent) => {
+    if (data?.mouse) return void act({ type: 'termWheel', id: cur, win, up: e.deltaY < 0 });
+    if (data?.alt) return;
+    setBack((b) => Math.max(0, b + (e.deltaY < 0 ? 3 : -3)));
+  };
+  return (
+    <>
+      <div className="row">
+        {live.map((a) => <button key={a.id} className={`chip ${a.id === cur ? 'sel' : ''}`} onClick={() => setId(a.id)}><Dot status={a.status} /> {a.name}</button>)}
+        <span className="spacer" />
+        {(['claude', 'shell'] as const).map((w) => <button key={w} className={`chip ${win === w ? 'sel' : ''}`} onClick={() => setWin(w)}>{w === 'claude' ? 'Terminal Claude' : 'Terminal comandos'}</button>)}
+      </div>
+      <div className="row" style={{ margin: '8px 0' }}>
+        <button className={`btn ${type ? 'primary' : ''}`} onClick={() => setType(!type)}>{type ? '⌨ Escribiendo (clic fuera para salir)' : '⌨ Escribir'}</button>
+        {back > 0 && <><span className="small muted">↑ historial · {back} líneas</span><button className="btn" onClick={() => setBack(0)}>Volver al vivo</button></>}
+        {error && <span className="small" style={{ color: 'var(--danger)' }}>{error}</span>}
+      </div>
+      <div className={`term ${type ? 'typing' : ''}`} tabIndex={0} onKeyDown={type ? onKey : undefined} onBlur={() => setType(false)} onWheel={onWheel} ref={(el) => {
+        if (type) el?.focus();
+      }}>
+        {(data?.lines ?? []).map((l, i) => <Row key={i} line={l} cursorX={type && data?.cursor?.y === i ? data.cursor.x : undefined} />)}
+      </div>
+      <div className="row" style={{ marginTop: 8 }}>
+        <textarea rows={2} placeholder="Pegar texto en el terminal (se envía tal cual, sin Enter)" value={paste} onChange={(e) => setPaste(e.target.value)} style={{ flex: 1 }} />
+        <button className="btn" disabled={!paste} onClick={() => (send({ text: paste }), setPaste(''))}>Pegar</button>
+        <button className="btn" onClick={() => send({ keys: ['Enter'] })}>↵ Enter</button>
+      </div>
     </>
   );
 }
@@ -332,7 +583,7 @@ function App() {
   }, [toast]);
   if (!snap) return <main className="muted">Conectando con orq…</main>;
   const pending = snap.run?.alerts.length ?? 0;
-  const tabs: [Tab, string, number?][] = [['teams', 'Equipos'], ['office', 'Oficina'], ['messages', 'Mensajes', pending], ['sessions', 'Sesiones']];
+  const tabs: [Tab, string, number?][] = [['teams', 'Equipos'], ['roles', 'Roles'], ['office', 'Oficina'], ['terminals', 'Terminales'], ['messages', 'Mensajes', pending], ['sessions', 'Sesiones']];
   return (
     <>
       <header>
@@ -345,12 +596,14 @@ function App() {
           ))}
         </nav>
         <span className="spacer" />
-        {!online && <span className="small" style={{ color: 'var(--danger)' }}>sin conexión…</span>}
+        {!online && <span className="small" style={{ color: 'var(--danger)' }}>sin conexión con orq… (si cerraste `orq web`, ábrelo de nuevo)</span>}
         <span className="usage">{snap.usage.map((u) => `${u.label} ${Math.round(u.pct)}%`).join(' · ')}</span>
       </header>
       <main>
         {tab === 'teams' && <Teams snap={snap} tell={tell} goOffice={() => setTab('office')} />}
+        {tab === 'roles' && <Roles snap={snap} tell={tell} />}
         {tab === 'office' && <Office run={snap.run} tell={tell} goTeams={() => setTab('teams')} />}
+        {tab === 'terminals' && <Terminals run={snap.run} tell={tell} />}
         {tab === 'messages' && <Messages run={snap.run} tell={tell} />}
         {tab === 'sessions' && <Sessions snap={snap} tell={tell} goOffice={() => setTab('office')} />}
       </main>

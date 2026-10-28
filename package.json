@@ -8,6 +8,7 @@
   },
   "scripts": {
     "start": "bun src/cli.tsx",
+    "web": "bun src/cli.tsx web",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },

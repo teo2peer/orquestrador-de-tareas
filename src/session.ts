@@ -4,7 +4,7 @@ import { loadDepartments, loadRoles } from './library.ts';
 import { PROJECT_DIR } from './paths.ts';
 import { launchIssue } from './providers.ts';
 import { loadRun } from './runs.ts';
-import type { CostProfile, Department, Notice, PermMode, ResumeMode, Role } from './types.ts';
+import type { CostProfile, Department, Notice, PermMode, ResumeMode, Role, TeamMode } from './types.ts';
 
 /**
  * The team a run is launched as (the department its lead leads, also when launched alone):
@@ -70,11 +70,31 @@ export class Session extends EventEmitter {
     if (this.hq) {
       const add = picked.filter((r) => !this.hq!.agents.has(r.id));
       for (const r of add) this.hq.hire(r);
+      if (!add.length) return ok('Esos agentes ya están en la sesión');
       return ok(add.length === 1 ? '1 agente añadido a la sesión' : `${add.length} agentes añadidos a la sesión`);
     }
     const ordered = req.lead ? [...picked.filter((r) => r.id === req.lead), ...picked.filter((r) => r.id !== req.lead)] : picked;
     this.open(this.make({ roles: ordered, lead: req.lead, permMode: req.perm, profile: req.profile, provider: req.provider || undefined, cwd: this.deps.cwd, ...teamOf(this.deps.depts(), req.lead, req.roleIds) }));
     return ok(`Sesión lanzada con ${ordered.length} agente${ordered.length === 1 ? '' : 's'}`);
+  }
+
+  /**
+   * Launches full Role objects (auto-composed teams). With a run open, 'role' teams add only the
+   * roles it lacks and 'area' teams are refused (one team mode per session); returns the count.
+   */
+  launchTeam(req: Omit<LaunchRequest, 'roleIds'> & { team: Role[]; lead: string; mode: TeamMode }): Outcome {
+    if (!req.team.length) return fail('No hay agentes que lanzar');
+    const issue = launchIssue(req.team, this.hq?.provider ?? req.provider);
+    if (issue) return fail(issue);
+    if (this.hq) {
+      if (req.mode === 'area') return fail('Detén la sesión para componer por partes');
+      const add = req.team.filter((r) => !this.hq!.agents.has(r.id));
+      for (const r of add) this.hq.hire(r);
+      return add.length ? ok(`${add.length} agente${add.length === 1 ? '' : 's'} añadido${add.length === 1 ? '' : 's'} a la sesión`) : ok('Esos agentes ya están en la sesión');
+    }
+    const ordered = [...req.team.filter((r) => r.id === req.lead), ...req.team.filter((r) => r.id !== req.lead)];
+    this.open(this.make({ roles: ordered, lead: req.lead, permMode: req.perm, mode: req.mode, profile: req.profile, provider: req.provider || undefined, cwd: this.deps.cwd, ...teamOf(this.deps.depts(), req.lead, req.team.map((r) => r.id)) }));
+    return ok(`Equipo creado y lanzado: ${ordered.length} agente${ordered.length === 1 ? '' : 's'}`);
   }
 
   /** Reopens a run; live agents reattach, stopped ones come back the way `mode` says. */

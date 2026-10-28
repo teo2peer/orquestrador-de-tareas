@@ -10,7 +10,7 @@ import type { AgentStatus, CostProfile, Msg, PermMode, TimelineEvent } from '../
 /** Everything the web UI draws, as plain JSON. The client never reads files or HQ directly. */
 export type Snapshot = {
   cwd: string;
-  roles: { id: string; name: string; title: string; color: string; writes: boolean; description: string; provider?: string }[];
+  roles: { id: string; name: string; title: string; color: string; writes: boolean; description: string; provider?: string; model?: string; scope: 'global' | 'project'; pack?: string; fromSource: boolean }[];
   depts: { id: string; name: string; icon: string; color: string; category: string; description: string; lead?: string; roles: string[] }[];
   providers: { id: string; name: string }[];
   prefs: { profile: CostProfile; provider: string };
@@ -63,7 +63,7 @@ export function snapshot(session: Session): Snapshot {
   const prefs = loadPrefs();
   return {
     cwd: PROJECT_DIR,
-    roles: loadRoles().map((r) => ({ id: r.id, name: r.name, title: r.title, color: r.color, writes: r.writes, description: r.description, provider: r.provider })),
+    roles: loadRoles().map((r) => ({ id: r.id, name: r.name, title: r.title, color: r.color, writes: r.writes, description: r.description, provider: r.provider, model: r.model, scope: r.scope, pack: r.pack, fromSource: !!r.source })),
     depts: loadDepartments().map((d) => ({ id: d.id, name: d.name, icon: d.icon, color: d.color, category: d.category, description: d.description, lead: d.lead, roles: d.roles })),
     providers: listProviders().map((p) => ({ id: p.id, name: p.name })),
     prefs: { profile: prefs.profile ?? 'max', provider: prefs.provider ?? '' },

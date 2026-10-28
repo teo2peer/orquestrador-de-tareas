@@ -139,6 +139,19 @@ orq import <dir|host:/dir> [pack] import Markdown agents as roles
 | ✉ **Mensajes** | Questions and reports addressed to you, with quick replies. |
 | ↺ **Sesiones** | Past and live runs: resume, reattach, inspect. |
 
+### 🌐 Web UI
+
+`orq web` serves the same office in your browser (`bun run web` from the repo). It binds to `127.0.0.1` only and every request needs a per‑launch token, so other sites cannot drive your agents. Closing it leaves the agents running in tmux, like quitting the TUI.
+
+| Web tab | Covers |
+|---|---|
+| Equipos | Departments, loose roles, **Auto por rol** and **Auto por partes del código** (include/exclude, lead, save to `.orq/`), permissions, cost profile, provider. |
+| Roles | Browse, filter, create, edit and delete roles. |
+| Oficina · Mensajes · Sesiones | Live agents, tasks, questions with quick replies, resume / stop / rename runs. |
+| Terminales | Each agent's Claude and command terminals (live screen, keyboard, paste, scrollback). |
+
+Not in the web yet: the auto‑team review editor (rename/merge areas, edit paths). Both UIs share one core (`src/session.ts`, `src/hq.ts`); changes must land in both (see `CLAUDE.md`).
+
 ---
 
 ## 🔌 Providers (other models and consoles)

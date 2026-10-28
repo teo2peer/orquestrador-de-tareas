@@ -68,7 +68,10 @@ if (cmd === 'web') {
     process.exit(1);
   }
   const { startWeb } = await import('./web/server.ts');
-  const web = await startWeb({ port });
+  const web = await startWeb({ port }).catch((e: Error) => {
+    console.error(`No pude abrir el servidor web${port ? ` en el puerto ${port}` : ''}: ${e.message}`);
+    process.exit(1);
+  });
   console.log(`orq web → ${web.url}\nCtrl+C para cerrar (los agentes siguen en tmux).`);
   // Like quitting the TUI: the agents keep running in tmux and the run can be reattached.
   const bye = () => (web.session.hq?.detach(), web.stop(), process.exit(0));

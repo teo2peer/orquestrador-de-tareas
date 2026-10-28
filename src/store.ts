@@ -45,9 +45,13 @@ function parseLines(file: string): Record<string, any>[] {
     });
 }
 
+/** Runs whose index was checked against their events.jsonl in this process (key: db file + run). */
+const synced = new Set<string>();
+
 /**
- * Events of a run, optionally only some kinds. Read from the SQLite index; a run that only has
- * events.jsonl (older, or the DB was lost) is imported first. Falls back to the jsonl on DB errors.
+ * Events of a run, optionally only some kinds. Read from the SQLite index. The first read of a run
+ * in this process checks the index against events.jsonl: a run with older or lost rows (events from
+ * before the index existed, a deleted DB) is rebuilt from the jsonl. Falls back to the jsonl on DB errors.
  */
 export function readRunEvents(runDir: string, runId: string, kinds?: readonly string[]): Record<string, any>[] {
   const jsonl = path.join(runDir, 'events.jsonl');
@@ -55,7 +59,12 @@ export function readRunEvents(runDir: string, runId: string, kinds?: readonly st
   try {
     const db = dbFor(runDir);
     if (!db) return filter(parseLines(jsonl));
-    if (!db.count(runId) && fs.existsSync(jsonl)) db.import(runId, parseLines(jsonl));
+    const key = `${db.file}#${runId}`;
+    if (!synced.has(key)) {
+      synced.add(key);
+      const all = parseLines(jsonl);
+      if (db.count(runId) < all.length) db.replace(runId, all);
+    }
     return db.events(runId, kinds);
   } catch {
     return filter(parseLines(jsonl));

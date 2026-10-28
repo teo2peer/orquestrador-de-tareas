@@ -21,6 +21,21 @@ export class RunDb {
   constructor(readonly file: string) {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     this.db = new Database(file, { create: true });
+    // Several orq processes (one per run) may open the same project DB at once. The WAL switch and the
+    // first schema creation fail with "database is locked" regardless of busy_timeout: retry them.
+    for (let attempt = 0; ; attempt++) {
+      try {
+        this.init();
+        break;
+      } catch (e: any) {
+        if (attempt >= 40 || !/locked|busy/i.test(String(e?.message))) throw e;
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10 + Math.floor(Math.random() * 30));
+      }
+    }
+  }
+
+  private init() {
+    this.db.run('PRAGMA busy_timeout = 5000');
     this.db.run('PRAGMA journal_mode = WAL');
     this.db.run('PRAGMA synchronous = NORMAL');
     this.db.run(`CREATE TABLE IF NOT EXISTS events (
@@ -51,6 +66,15 @@ export class RunDb {
     const where = kinds?.length ? ` AND kind IN (${kinds.map(() => '?').join(',')})` : '';
     const rows = this.db.query(`SELECT data FROM events WHERE run = ?${where} ORDER BY id`).all(run, ...(kinds ?? [])) as { data: string }[];
     return rows.map((r) => JSON.parse(r.data));
+  }
+
+  /** Replace a run's rows with `events` (the index is derived data: the jsonl is the truth). */
+  replace(run: string, events: Record<string, any>[]) {
+    this.db.transaction(() => {
+      this.db.query('DELETE FROM events WHERE run = ?').run(run);
+      this.db.query('DELETE FROM search WHERE run = ?').run(run);
+      for (const e of events) this.insert(run, e);
+    })();
   }
 
   /** Bulk-load events (e.g. a run that only has events.jsonl) in one transaction. */

@@ -34,7 +34,31 @@ describe('RunDb', () => {
   });
 });
 
+test('concurrent processes write the same DB without losing events (busy timeout)', async () => {
+  const file = path.join(tmp, 'shared', 'orq.db');
+  const script = `import { RunDb } from ${JSON.stringify(path.resolve(import.meta.dir, 'db.ts'))};
+    const db = new RunDb(${JSON.stringify(file)});
+    for (let i = 0; i < 300; i++) db.insert(process.argv[1], { ts: i, kind: 'note', agent: 'x', text: 'n' + i });`;
+  const spawn = (run: string) => Bun.spawn(['bun', '-e', script, run], { stdout: 'ignore', stderr: 'pipe' });
+  const procs = [spawn('ra'), spawn('rb'), spawn('rc')];
+  const codes = await Promise.all(procs.map((p) => p.exited));
+  expect(codes).toEqual([0, 0, 0]);
+  const db = new RunDb(file);
+  expect(['ra', 'rb', 'rc'].map((r) => db.count(r))).toEqual([300, 300, 300]);
+}, 30_000);
+
 describe('readRunEvents', () => {
+  test('rebuilds a run whose index only has the newest events (index created while the run was live)', () => {
+    const dir = path.join(tmp, 'c', 'runs', 'r7');
+    fs.mkdirSync(dir, { recursive: true });
+    const old = [{ ts: 1, kind: 'note', agent: 'x', text: 'antiguo' }, { ts: 2, kind: 'note', agent: 'x', text: 'medio' }, { ts: 3, kind: 'note', agent: 'x', text: 'nuevo' }];
+    fs.writeFileSync(path.join(dir, 'events.jsonl'), old.map((e) => JSON.stringify(e)).join('\n') + '\n');
+    const db = new RunDb(path.join(tmp, 'c', 'runs', 'orq.db'));
+    db.insert('r7', old[2]!); // only the last event reached the index
+    db.close();
+    expect(readRunEvents(dir, 'r7').map((e) => e.text)).toEqual(['antiguo', 'medio', 'nuevo']);
+  });
+
   test('imports a run that only has events.jsonl, then serves it from the DB', () => {
     const dir = path.join(tmp, 'b', 'runs', 'r9');
     fs.mkdirSync(dir, { recursive: true });

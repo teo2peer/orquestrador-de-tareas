@@ -1441,6 +1441,8 @@ ${
 
   /** Last time each agent's context size was read during a turn. */
   private ctxReadAt = new Map<string, number>();
+  /** Agents already reminded, once, to `memory save` after their first done report. */
+  private memoryNudged = new Set<string>();
 
   private onHook(id: string, p: Record<string, any>): Record<string, unknown> {
     const a = this.agents.get(id);
@@ -1683,7 +1685,13 @@ ${
           a.task = '';
           a.lastDone = short(summary, 120);
         }
-        return args.details ? 'reported (details saved to the run log)' : 'reported';
+        const ack = args.details ? 'reported (details saved to the run log)' : 'reported';
+        // Once per agent, at the moment its context is most likely to be cleared next: ask for durable facts.
+        if (status === 'done' && !this.memoryNudged.has(id) && !this.store.readEvents(['note']).some((e) => e.agent === id)) {
+          this.memoryNudged.add(id);
+          return `${ack}. Before your next task: facts you will need later (paths, decisions, constraints) are lost on /clear or resume unless you call \`memory\` with \`save\`.`;
+        }
+        return ack;
       }
       case 'log':
         return this.appendLog(a, String(args.text ?? ''), args.file ? String(args.file) : undefined);

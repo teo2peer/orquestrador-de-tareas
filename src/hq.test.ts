@@ -45,6 +45,16 @@ function setup() {
 }
 
 describe('memory', () => {
+  test('the first done report reminds the agent to save notes, once, and not if it already has notes', () => {
+    // Runs before any test saves a note as `cto`: the tests share one run id and DB.
+    const { tool } = setup();
+    expect(tool('report', { to: 'user', summary: 'ok', status: 'done' })).toContain('`memory`');
+    expect(tool('report', { to: 'user', summary: 'ok', status: 'done' })).toBe('reported');
+    const b = setup();
+    b.tool('memory', { action: 'save', text: 'fact' });
+    expect(b.tool('report', { to: 'user', summary: 'ok', status: 'done' })).toBe('reported');
+  });
+
   test('save then search finds the note; empty input is rejected', () => {
     const { tool } = setup();
     expect(() => tool('memory', { action: 'save', text: ' ' })).toThrow('empty');
